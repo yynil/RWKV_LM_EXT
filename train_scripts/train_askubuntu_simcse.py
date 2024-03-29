@@ -185,6 +185,7 @@ if __name__ == '__main__':
     parser.add_argument('--train_batch_size', type=int, default=64, help='Batch size for training')
     parser.add_argument('--max_seq_length', type=int, default=32, help='Maximum sequence length')
     parser.add_argument('--temperature', type=float, default=0.05, help='Temperature parameter for the softmax')
+    parser.add_argument('--num_devices',type=int, default=1, help='Number of devices for training')
     args = parser.parse_args()
 
     askubuntu_folder = args.data_path
@@ -295,7 +296,7 @@ if __name__ == '__main__':
     rwkv_args.accumulate_grad_batches = 1
     rwkv_args.gradient_clip_val = 1.0
     rwkv_args.num_nodes = 1
-    rwkv_args.devices = 1
+    rwkv_args.devices = args.num_devices
     rwkv_args.micro_bsz = args.train_batch_size
     rwkv_args.real_bsz = int(rwkv_args.num_nodes) * int(rwkv_args.devices) * rwkv_args.micro_bsz
     rwkv_args.epoch_steps = len(train_ds) // rwkv_args.real_bsz
