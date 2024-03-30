@@ -274,7 +274,7 @@ if __name__ == '__main__':
     rwkv_args.head_qk = 0
     rwkv_args.grad_cp = 0
     rwkv_args.save_per_batches = 10000
-    rwkv_args.my_exit = 3
+    rwkv_args.my_exit = 300
     rwkv_args.weight_decay = 0.001
     rwkv_args.lr_init = 3e-4
     rwkv_args.lr_final = 1e-5
