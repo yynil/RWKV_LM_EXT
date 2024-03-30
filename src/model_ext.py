@@ -238,6 +238,20 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
         self.embedding_id = embedding_id
         if should_delete_head and hasattr(self.rwkvModel, 'head'):
             del self.rwkvModel.head
+
+    def pooling(self, x,actual_len):
+        #x is (bs,seq_len,emb_dim)
+        #actual_len is (bs,) int tensor which indicates the actual length of each sequence
+        #weights is (bs,seq_len) float tensor which indicates the weight of each token, the weight[i] = (i+1)/actual_len[i], the last token embedding is 1 and others are degraded by the distance to the last token 
+        #create a mask to mask the padding token
+        mask = torch.arange(x.size(1),device = x.device) < actual_len.unsqueeze(1)
+        weights = torch.arange(1,x.size(1)+1,device = x.device).unsqueeze(0).float() / actual_len.unsqueeze(1).float()
+        #mask weights to zero according mask
+        weights = weights * mask.float()
+        #add the sum of token embeddings from 0 to actual len as the final embedding 
+        x = torch.sum(x * weights.unsqueeze(-1),dim=1)
+        x = x / actual_len.unsqueeze(1).float()
+        return x
     def forward(self, idx):
         args = self.rwkvModel.args
         B, T = idx.size()
@@ -265,7 +279,7 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
 
         #calculate the idx actual length which is first self.embedding_id
         idx_actual_len = torch.eq(idx, self.embedding_id).int().argmax(-1)
-        x = x[torch.arange(B), idx_actual_len]
+        x = self.pooling(x,idx_actual_len)
         return x
     
     def configure_optimizers(self) :
@@ -346,16 +360,23 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
                 # return FusedAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, adam_w_mode=False, weight_decay=0, amsgrad=False)
     
     def training_step(self, batch, batch_idx):
-        query = batch["query"]
-        positive = batch["positive"]
-        negative = batch["negative"]
-        logits_positive = batch["logits_positive"]
-        logits_negative = batch["logits_negative"]
-        query_embeddings = self(query)
-        positive_embeddings = self(positive)
-        negative_embeddings = self(negative)
-        labels = logits_positive - logits_negative
-        positive_scores = pairwise_dot_score(query_embeddings, positive_embeddings)
-        negative_scores = pairwise_dot_score(query_embeddings, negative_embeddings)
-        loss_fct = nn.MSELoss()
-        return loss_fct(positive_scores-negative_scores, labels)
+        query = batch["query"]#size is (bs,seq_len)
+        positive = batch["positive"]#size is (bs,seq_len)
+        if "negative" in batch:
+            negative = batch["negative"]
+        else:
+            negative = None
+        query_embeddings = self.forward(query)#size is (bs,emb_dim)
+        positive_embeddings = self.forward(positive)#size is (bs,emb_dim)
+        if negative is not None:
+            negative_embeddings = self.forward(negative)#size is (bs,emb_dim)
+            positive_embeddings = torch.cat([positive_embeddings,negative_embeddings])#size is (2*bs,emb_dim)
+        from sentence_transformers import util
+        similarity_fct=util.cos_sim
+        scores = similarity_fct(query_embeddings, positive_embeddings)*20
+        labels = torch.arange(0, scores.shape[0], dtype=torch.long).to(scores.device)
+        loss_fct = nn.CrossEntropyLoss()
+        loss = loss_fct(scores, labels)
+        self.log("train_loss", loss)
+        return loss
+

@@ -186,7 +186,7 @@ if __name__ == '__main__':
     parser.add_argument('--output_dir', type=str, default='/media/yueyulin/bigdata/output/wiki1m', help='Output directory')
     parser.add_argument('--num_epochs', type=int, default=1, help='Number of training epochs')
     parser.add_argument('--train_batch_size', type=int, default=64, help='Batch size for training')
-    parser.add_argument('--max_seq_length', type=int, default=32, help='Maximum sequence length')
+    parser.add_argument('--max_seq_length', type=int, default=33, help='Maximum sequence length')
     parser.add_argument('--temperature', type=float, default=0.05, help='Temperature parameter for the softmax')
     parser.add_argument('--num_devices',type=int, default=1, help='Number of devices for training')
     args = parser.parse_args()
@@ -299,36 +299,21 @@ if __name__ == '__main__':
         tokenized_ids = [[ta + [embedding_id],tb + [embedding_id]] for ta,tb in tokenized_ids]
         #pad to max_seq_length
         tokenized_ids = [[ta + [pad_id] * (max_seq_length - len(ta)),tb + [pad_id] * (max_seq_length - len(tb))] for ta,tb in tokenized_ids]
-        return torch.tensor(tokenized_ids)
+        query = [a for a,b in tokenized_ids]
+        positive = [b for a,b in tokenized_ids]
+        return {'query':torch.tensor(query,dtype=torch.long),'positive':torch.tensor(positive,dtype=torch.long)}
     
     train_dataloader = DataLoader(train_ds, shuffle=True, batch_size=args.train_batch_size, collate_fn=data_collator,prefetch_factor=20,num_workers=4)
     print(train_dataloader)
     for batch in train_dataloader:
+        query = batch['query']
+        positive = batch['positive']
         print(batch)
-        print(batch.shape)
-        print(batch[0][0])
-        print(batch[0][1])
+        print(query.shape)
+        print(positive.shape)
         break
     # replace the train_step in the model\
-    from  torch.nn import CosineSimilarity
-    cos = CosineSimilarity(dim=-1)
-    temperature = args.temperature
-    def training_step(self,batch,batch_idx):
-        batch_size, num_sentence, seq_length = batch.shape
-        input_ids = batch.view(-1,seq_length)#turn to (bs*num_sentence,seq_length)
-        embeddings = self.forward(input_ids)
-        embeddings = embeddings.view((batch_size,num_sentence,embeddings.shape[-1]))#turn to (bs,num_sentence,seq_length)
-        #seperate the embeddings to sentence_a and sentence_b
-        embeddings_a = embeddings[:,0,:]
-        embeddings_b = embeddings[:,1,:]
-        #calculate the cosine similarity
-        similarity = cos(embeddings_a.unsqueeze(1),embeddings_b.unsqueeze(0))/temperature
-        #calculate the loss
-        labels = torch.arange(batch_size).long().to(embeddings.device)
-        loss_fct = torch.nn.CrossEntropyLoss()
-        loss = loss_fct(similarity,labels)
-        return loss
-    embedding_model.training_step = types.MethodType(training_step, embedding_model)
+
     device = "cuda"
     trainer = Trainer(accelerator=device,
                       strategy="deepspeed_stage_2_offload",
