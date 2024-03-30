@@ -11,6 +11,57 @@ from deepspeed.ops.adam import FusedAdam,DeepSpeedCPUAdam
 from sentence_transformers.util import pairwise_dot_score
 import traceback
 
+def load_embedding_ckpt_and_parse_args(ckpt_file, args):
+    try:
+        with torch.no_grad():
+            w = torch.load(ckpt_file, map_location='cpu') # load model to CPU first
+            args.MODEL_NAME = ckpt_file.strip()
+            #replace rwkvModel. to blanck
+            for k in list(w.keys()):
+                if 'rwkvModel.' in k:
+                    w[k.replace('rwkvModel.', '')] = w[k]
+                    del w[k]
+            if not args.MODEL_NAME.endswith('.pth'):
+                args.MODEL_NAME += '.pth'
+            import gc
+            gc.collect()
+            n_embd = w['emb.weight'].shape[1]
+            vocab_size = w['emb.weight'].shape[0]
+            dim_att = w['blocks.0.att.key.weight'].shape[0] # note: transposed matrix
+            dim_ffn = w['blocks.0.ffn.key.weight'].shape[0] # note: transposed matrix
+            n_layer = 0
+            keys = list(w.keys())
+            version = 4
+            n_head = 64
+            for x in keys:
+                layer_id = int(x.split('.')[1]) if ('blocks.' in x) else 0
+                n_layer = max(n_layer, layer_id+1)
+                if 'ln_x' in x:
+                    version = max(5, version)
+                if 'gate.weight' in x:
+                    version = max(5.1, version)
+                if int(version) == 5 and 'att.time_decay' in x:
+                    n_head = w[x].shape[0]
+                    if len(w[x].shape) > 1:
+                        if w[x].shape[1] > 1:
+                            version = max(5.2, version)
+                if 'time_maa' in x:
+                    version = max(6, version)
+                if int(version) == 6 and 'time_faaaa' in x:
+                    n_head = w[x].shape[0]
+
+            head_size_a = dim_att // n_head
+            args.n_embd = n_embd
+            args.dim_att = dim_att
+            args.dim_ffn = dim_ffn
+            args.n_layer = n_layer
+            args.version = version
+            args.head_size_a = head_size_a
+            args.vocab_size = vocab_size
+            return w
+    except Exception as e:
+        traceback.print_exc()
+        return None
 
 def load_ckpt_and_parse_args(ckpt_file, args):
     try:
