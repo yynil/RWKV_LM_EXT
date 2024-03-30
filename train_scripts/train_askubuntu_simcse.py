@@ -174,7 +174,10 @@ class YueyuTrainCallback(pl.Callback):
             trainer.my_loss_count = 0
             if (args.epoch_begin + trainer.current_epoch) >= args.my_exit:
                 exit(0)
-
+            output_dir = f"{args.trainable_dir_output}/epoch_{trainer.current_epoch}"
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            save_trainable_parameters(pl_module, output_dir, args.model_file)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
