@@ -28,7 +28,7 @@ import math
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer
 import time
-def save_trainable_parameters(model, trainable_dir_output, model_filename,pefconfig):
+def save_trainable_parameters(model, trainable_dir_output, model_filename):
     print(f"save trainable parameters to {trainable_dir_output} pretrained from {model_filename}")
     # 创建保存目录
     os.makedirs(trainable_dir_output, exist_ok=True)
