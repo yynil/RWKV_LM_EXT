@@ -379,4 +379,3 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
         loss = loss_fct(scores, labels)
         self.log("train_loss", loss)
         return loss
-
