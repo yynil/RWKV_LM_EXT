@@ -396,14 +396,14 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
             self.log("train_loss", loss)
             return loss
         else:
-            labels = torch.ones(positive_embeddings.shape[0]).to(positive_embeddings.device)
+            labels = torch.zeros(positive_embeddings.shape[0]).to(positive_embeddings.device)
             from sentence_transformers import util
             similarity_fct = util.pairwise_cos_sim
             scores = similarity_fct(query_embeddings, positive_embeddings)
             if negative is not None:
                 negative_embeddings = self.forward(negative)
                 scores = torch.cat([scores,similarity_fct(query_embeddings, negative_embeddings)])
-                labels = torch.cat([labels,torch.zeros(negative_embeddings.shape[0]).to(positive_embeddings.device)])
+                labels = torch.cat([labels,torch.ones(negative_embeddings.shape[0]).to(positive_embeddings.device)])
             labels = labels.bfloat16()
             
             scores = scores * 20
