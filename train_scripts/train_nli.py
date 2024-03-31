@@ -207,6 +207,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_devices',type=int, default=1, help='Number of devices for training')
     parser.add_argument('--pooling_type', type=str, default='lasttoken', help='Pooling type')
     parser.add_argument('--add_mlp',action='store_true', help='Add mlp layer after pooling',default=False)
+    parser.add_argument('--is_in_batch_negative',action='store_true', help='Use in batch multi negative',default=False)
     args = parser.parse_args()
 
     nil_file = args.nil_file
@@ -349,7 +350,10 @@ if __name__ == '__main__':
     inform = rwkv_base_model.load_state_dict(w)
     print(inform)
 
-    embedding_model = RwkvForSequenceEmbedding(rwkv_base_model,pooling_type=args.pooling_type,add_mlp=args.add_mlp)
+    embedding_model = RwkvForSequenceEmbedding(rwkv_base_model,
+                                               pooling_type=args.pooling_type,
+                                               add_mlp=args.add_mlp,
+                                               is_in_batch_negative=args.is_in_batch_negative,)
     print(embedding_model)
 
     

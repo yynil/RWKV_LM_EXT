@@ -231,13 +231,14 @@ class RwkvForClassification(pl.LightningModule):
 
 class RwkvForSequenceEmbedding(pl.LightningModule):
 
-    def __init__(self, rwkvModel,embedding_id = 1, pad_id = 0,should_delete_head = True,pooling_type='weightedmean',add_mlp = False):
+    def __init__(self, rwkvModel,embedding_id = 1, pad_id = 0,should_delete_head = True,pooling_type='weightedmean',add_mlp = False,is_in_batch_negative = False):
         super(RwkvForSequenceEmbedding, self).__init__()
         self.pad_id = pad_id
         self.rwkvModel = rwkvModel
         self.embedding_id = embedding_id
         self.pooling_type = pooling_type
         self.add_mlp = add_mlp
+        self.is_in_batch_negative = is_in_batch_negative
         if add_mlp:
             self.dense = nn.Linear(rwkvModel.args.n_embd, rwkvModel.args.n_embd)
             self.activation = nn.Tanh()
@@ -382,14 +383,41 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
             negative = None
         query_embeddings = self.forward(query)#size is (bs,emb_dim)
         positive_embeddings = self.forward(positive)#size is (bs,emb_dim)
-        if negative is not None:
-            negative_embeddings = self.forward(negative)#size is (bs,emb_dim)
-            positive_embeddings = torch.cat([positive_embeddings,negative_embeddings])#size is (2*bs,emb_dim)
-        from sentence_transformers import util
-        similarity_fct=util.cos_sim
-        scores = similarity_fct(query_embeddings, positive_embeddings)*20
-        labels = torch.arange(0, scores.shape[0], dtype=torch.long).to(scores.device)
-        loss_fct = nn.CrossEntropyLoss()
-        loss = loss_fct(scores, labels)
-        self.log("train_loss", loss)
-        return loss
+        if self.is_in_batch_negative:
+            if negative is not None:
+                negative_embeddings = self.forward(negative)#size is (bs,emb_dim)
+                positive_embeddings = torch.cat([positive_embeddings,negative_embeddings])#size is (2*bs,emb_dim)
+            from sentence_transformers import util
+            similarity_fct=util.cos_sim
+            scores = similarity_fct(query_embeddings, positive_embeddings)*20
+            labels = torch.arange(0, scores.shape[0], dtype=torch.long).to(scores.device)
+            loss_fct = nn.CrossEntropyLoss()
+            loss = loss_fct(scores, labels)
+            self.log("train_loss", loss)
+            return loss
+        else:
+            labels = torch.ones(positive_embeddings.shape[0]).to(positive_embeddings.device)
+            from sentence_transformers import util
+            similarity_fct = util.pairwise_cos_sim
+            scores = similarity_fct(query_embeddings, positive_embeddings)
+            if negative is not None:
+                negative_embeddings = self.forward(negative)
+                scores = torch.cat([scores,similarity_fct(query_embeddings, negative_embeddings)])
+                labels = torch.cat([labels,torch.zeros(negative_embeddings.shape[0]).to(positive_embeddings.device)])
+            labels = labels.bfloat16()
+            
+            scores = scores * 20
+            scores = scores[:, None] - scores[None, :]
+
+            # label matrix indicating which pairs are relevant
+            labels = labels[:, None] < labels[None, :]
+            labels = labels.bfloat16()
+
+            # mask out irrelevant pairs so they are negligible after exp()
+            scores = scores - (1 - labels) * 1e12
+
+            # append a zero as e^0 = 1
+            scores = torch.cat((torch.zeros(1).to(scores.device), scores.view(-1)), dim=0)
+            loss = torch.logsumexp(scores, dim=0)
+
+            return loss
