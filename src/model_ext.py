@@ -258,7 +258,7 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
             #add the sum of token embeddings from 0 to actual len as the final embedding 
             x = torch.sum(x * weights.unsqueeze(-1),dim=1)
             x = x / actual_len.unsqueeze(1).float()
-            return x
+            return x.bfloat16()
         elif self.pooling_type == 'lasttoken':
             #x is (bs,seq_len,emb_dim)
             #actual_len is (bs,) int tensor which indicates the index of last token
@@ -294,7 +294,7 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
         idx_actual_len = torch.eq(idx, self.embedding_id).int().argmax(-1)
         x = self.pooling(x,idx_actual_len)
         if self.add_mlp:
-            x = self.activation(self.dense(x.float())).bfloat16()
+            x = self.activation(self.dense(x))
         return x
     
     def configure_optimizers(self) :
