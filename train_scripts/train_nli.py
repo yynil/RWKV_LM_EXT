@@ -201,10 +201,12 @@ if __name__ == '__main__':
     parser.add_argument('--sts_file', type=str, default='/media/yueyulin/bigdata/data/stsbenchmark/stsbenchmark.tsv', help='Path to the training data')
     parser.add_argument('--output_dir', type=str, default='/media/yueyulin/bigdata/output/wiki1m', help='Output directory')
     parser.add_argument('--num_epochs', type=int, default=1, help='Number of training epochs')
-    parser.add_argument('--train_batch_size', type=int, default=32, help='Batch size for training')
+    parser.add_argument('--train_batch_size', type=int, default=4, help='Batch size for training')
     parser.add_argument('--max_seq_length', type=int, default=33, help='Maximum sequence length')
     parser.add_argument('--temperature', type=float, default=0.05, help='Temperature parameter for the softmax')
     parser.add_argument('--num_devices',type=int, default=1, help='Number of devices for training')
+    parser.add_argument('--pooling_type', type=str, default='lasttoken', help='Pooling type')
+    parser.add_argument('--add_mlp',action='store_true', help='Add mlp layer after pooling',default=False)
     args = parser.parse_args()
 
     nil_file = args.nil_file
@@ -347,7 +349,7 @@ if __name__ == '__main__':
     inform = rwkv_base_model.load_state_dict(w)
     print(inform)
 
-    embedding_model = RwkvForSequenceEmbedding(rwkv_base_model)
+    embedding_model = RwkvForSequenceEmbedding(rwkv_base_model,pooling_type=args.pooling_type,add_mlp=args.add_mlp)
     print(embedding_model)
 
     

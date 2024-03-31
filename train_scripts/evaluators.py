@@ -114,9 +114,9 @@ class EmbeddingSimilarityEvaluator:
             sentences2 = batch['sentence2'].to(device)
             scores = batch['scores'].to(device)
             with torch.no_grad():
-                embeddings1 = model.forward(sentences1)
+                embeddings1 = model.forward(sentences1).float()
                 
-                embeddings2 = model.forward(sentences2) 
+                embeddings2 = model.forward(sentences2).float() 
             #convert embeddings1,embeddings2 from pytorch tensor to numpy array
             embeddings1 = embeddings1.cpu().numpy()
             embeddings2 = embeddings2.cpu().numpy()

@@ -231,27 +231,39 @@ class RwkvForClassification(pl.LightningModule):
 
 class RwkvForSequenceEmbedding(pl.LightningModule):
 
-    def __init__(self, rwkvModel,embedding_id = 1, pad_id = 0,should_delete_head = True):
+    def __init__(self, rwkvModel,embedding_id = 1, pad_id = 0,should_delete_head = True,pooling_type='weightedmean',add_mlp = False):
         super(RwkvForSequenceEmbedding, self).__init__()
         self.pad_id = pad_id
         self.rwkvModel = rwkvModel
         self.embedding_id = embedding_id
+        self.pooling_type = pooling_type
+        self.add_mlp = add_mlp
+        if add_mlp:
+            self.dense = nn.Linear(rwkvModel.args.n_embd, rwkvModel.args.n_embd)
+            self.activation = nn.Tanh()
         if should_delete_head and hasattr(self.rwkvModel, 'head'):
             del self.rwkvModel.head
 
     def pooling(self, x,actual_len):
-        #x is (bs,seq_len,emb_dim)
-        #actual_len is (bs,) int tensor which indicates the actual length of each sequence
-        #weights is (bs,seq_len) float tensor which indicates the weight of each token, the weight[i] = (i+1)/actual_len[i], the last token embedding is 1 and others are degraded by the distance to the last token 
-        #create a mask to mask the padding token
-        mask = torch.arange(x.size(1),device = x.device) < actual_len.unsqueeze(1)
-        weights = torch.arange(1,x.size(1)+1,device = x.device).unsqueeze(0).float() / actual_len.unsqueeze(1).float()
-        #mask weights to zero according mask
-        weights = weights * mask.float()
-        #add the sum of token embeddings from 0 to actual len as the final embedding 
-        x = torch.sum(x * weights.unsqueeze(-1),dim=1)
-        x = x / actual_len.unsqueeze(1).float()
-        return x
+        if self.pooling_type == 'weightedmean':
+            #x is (bs,seq_len,emb_dim)
+            #actual_len is (bs,) int tensor which indicates the actual length of each sequence
+            #weights is (bs,seq_len) float tensor which indicates the weight of each token, the weight[i] = (i+1)/actual_len[i], the last token embedding is 1 and others are degraded by the distance to the last token 
+            #create a mask to mask the padding token
+            mask = torch.arange(x.size(1),device = x.device) <= actual_len.unsqueeze(1)
+            weights = torch.arange(1,x.size(1)+1,device = x.device).unsqueeze(0).float() / actual_len.unsqueeze(1).float()
+            #mask weights to zero according mask
+            weights = weights * mask.float()
+            #add the sum of token embeddings from 0 to actual len as the final embedding 
+            x = torch.sum(x * weights.unsqueeze(-1),dim=1)
+            x = x / actual_len.unsqueeze(1).float()
+            return x
+        elif self.pooling_type == 'lasttoken':
+            #x is (bs,seq_len,emb_dim)
+            #actual_len is (bs,) int tensor which indicates the index of last token
+            #return the last token embedding
+            x = x[torch.arange(x.size(0)),actual_len]
+            return x
     def forward(self, idx):
         args = self.rwkvModel.args
         B, T = idx.size()
@@ -280,6 +292,8 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
         #calculate the idx actual length which is first self.embedding_id
         idx_actual_len = torch.eq(idx, self.embedding_id).int().argmax(-1)
         x = self.pooling(x,idx_actual_len)
+        if self.add_mlp:
+            x = self.activation(self.dense(x))
         return x
     
     def configure_optimizers(self) :
