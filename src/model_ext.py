@@ -294,7 +294,7 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
         idx_actual_len = torch.eq(idx, self.embedding_id).int().argmax(-1)
         x = self.pooling(x,idx_actual_len)
         if self.add_mlp:
-            x = self.activation(self.dense(x))
+            x = self.activation(self.dense(x.float())).bfloat16()
         return x
     
     def configure_optimizers(self) :
