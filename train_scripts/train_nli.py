@@ -227,13 +227,13 @@ if __name__ == '__main__':
                 sent2 = row['sentence2'].strip()
                 label = row['label'].strip()
                 add_to_samples(sent1, sent2, label)
-                add_to_samples(sent2, sent1, label)
+                # add_to_samples(sent2, sent1, label)
 
     train_samples = []
     for sent1,others in train_data.items():
         if len(others['entailment']) > 0 and len(others['contradiction']) > 0:
             train_samples.append({'query':sent1,'positive':random.choice(list(others['entailment'])),'negative':random.choice(list(others['contradiction']))})
-            train_samples.append({'query':random.choice(list(others['entailment'])),'positive':sent1,'negative':random.choice(list(others['contradiction']))})
+            # train_samples.append({'query':random.choice(list(others['entailment'])),'positive':sent1,'negative':random.choice(list(others['contradiction']))})
     del train_data
     #remove duplicated data in train_samples
     import json
