@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from torch import nn
 from deepspeed.ops.adam import FusedAdam,DeepSpeedCPUAdam
-from sentence_transformers.util import pairwise_dot_score
+from sentence_transformers.util import pairwise_cos_sim
 import traceback
 
 def load_embedding_ckpt_and_parse_args(ckpt_file, args):
@@ -376,6 +376,27 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
                 return DeepSpeedCPUAdam(optim_groups, lr=self.args.lr_init, betas=self.args.betas, eps=self.args.adam_eps, bias_correction=True, weight_decay=0, amsgrad=False)
                 # return FusedAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, adam_w_mode=False, weight_decay=0, amsgrad=False)
     
+    def validation_step(self, batch, batch_idx):
+        query = batch["query"]#size is (bs,seq_len)
+        positive = batch["positive"]#size is (bs,seq_len)
+        if "negative" in batch:
+            negative = batch["negative"]
+        else:
+            negative = None
+        query_embeddings = self.forward(query)#size is (bs,emb_dim)
+        positive_embeddings = self.forward(positive)#size is (bs,emb_dim)
+        if negative is not None:
+            negative_embeddings = self.forward(negative)
+            positive_embeddings = torch.cat([positive_embeddings,negative_embeddings])#size is (2*bs,emb_dim)
+        from sentence_transformers import util
+        similarity_fct=util.cos_sim
+        scores = similarity_fct(query_embeddings, positive_embeddings)*20
+        labels = torch.arange(0, scores.shape[0], dtype=torch.long).to(scores.device)
+        loss_fct = nn.CrossEntropyLoss()
+        loss = loss_fct(scores, labels)
+        self.log("val_loss", loss,sync_dist=True)
+        return loss
+
     def training_step(self, batch, batch_idx):
         query = batch["query"]#size is (bs,seq_len)
         positive = batch["positive"]#size is (bs,seq_len)
@@ -421,5 +442,5 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
             # append a zero as e^0 = 1
             scores = torch.cat((torch.zeros(1).to(scores.device), scores.view(-1)), dim=0)
             loss = torch.logsumexp(scores, dim=0)
-
+            self.log("train_loss", loss)
             return loss
