@@ -231,7 +231,7 @@ class RwkvForClassification(pl.LightningModule):
 
 class RwkvForSequenceEmbedding(pl.LightningModule):
 
-    def __init__(self, rwkvModel,embedding_id = 1, pad_id = 0,should_delete_head = True,pooling_type='weightedmean',add_mlp = False,is_in_batch_negative = False):
+    def __init__(self, rwkvModel,embedding_id = 1, pad_id = 0,should_delete_head = True,pooling_type='weightedmean',add_mlp = False,is_in_batch_negative = False,output_dim = 0):
         super(RwkvForSequenceEmbedding, self).__init__()
         self.pad_id = pad_id
         self.rwkvModel = rwkvModel
@@ -240,7 +240,9 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
         self.add_mlp = add_mlp
         self.is_in_batch_negative = is_in_batch_negative
         if add_mlp:
-            self.dense = nn.Linear(rwkvModel.args.n_embd, rwkvModel.args.n_embd)
+            if output_dim == 0:
+                output_dim = rwkvModel.args.n_embd
+            self.dense = nn.Linear(rwkvModel.args.n_embd, output_dim)
             self.activation = nn.Tanh()
         if should_delete_head and hasattr(self.rwkvModel, 'head'):
             del self.rwkvModel.head
