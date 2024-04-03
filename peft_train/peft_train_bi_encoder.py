@@ -137,7 +137,7 @@ def create_arg_parser():
 
     #add peft arguments
     parser.add_argument('--lora_type', type=str, default='lora', help='lora type', choices=['lora','adalora'])
-    parser.add_argument('--target_modules', type=str, nargs='+',default=['key','value','receptance'], help='target modules')
+    parser.add_argument('--target_modules', type=str, nargs='+',default=['ffn.key','ffn.value','ffn.receptance'], help='target modules')
     parser.add_argument('--lora_r',type=int,default=8)
     parser.add_argument('--lora_alpha',type=int,default=32)
     parser.add_argument('--lora_dropout',type=float,default=0.1)
@@ -187,12 +187,6 @@ if __name__ == '__main__':
     inform = rwkv_base_model.load_state_dict(w)
     print(inform)
 
-    embedding_model = RwkvForSequenceEmbedding(rwkv_base_model,
-                                               pooling_type=args.pooling_type,
-                                               add_mlp=args.add_mlp,
-                                               is_in_batch_negative=args.is_in_batch_negative,
-                                               output_dim=args.mlp_dim)
-    print(embedding_model)
 
 
     #Configure the peft configuration to inject 
@@ -206,15 +200,22 @@ if __name__ == '__main__':
 
     #Inject the lora configuration to the model
     from peft import inject_adapter_in_model
-    embedding_model = inject_adapter_in_model(lora_config,embedding_model,adapter_name='embedding_lora')
-    print(embedding_model)
+    rwkv_base_model = inject_adapter_in_model(lora_config,rwkv_base_model,adapter_name='embedding_lora')
+    print(rwkv_base_model)
     def print_trainable_params(model):
         #count whole model parameters and print trainable parameters' count and percentage
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(colorama.Fore.GREEN + f'total params: {total_params}, trainable params: {trainable_params}, trainable params percentage: {trainable_params/total_params*100:.2f}%')
-    print_trainable_params(embedding_model)
+    print_trainable_params(rwkv_base_model)
 
+
+    embedding_model = RwkvForSequenceEmbedding(rwkv_base_model,
+                                               pooling_type=args.pooling_type,
+                                               add_mlp=args.add_mlp,
+                                               is_in_batch_negative=args.is_in_batch_negative,
+                                               output_dim=args.mlp_dim)
+    print(embedding_model)
 
     #Train the model
     device = "cuda"

@@ -356,6 +356,7 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
         else:
             optim_groups = [{"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0}]
         # print('optim_groups', optim_groups)
+        # print(lr_1x)
         if args.weight_decay > 0:
             optim_groups += [{"params": [param_dict[n] for n in lr_decay], "weight_decay": args.weight_decay, "my_lr_scale": 1.0}]
             if torch.backends.mps.is_available():
