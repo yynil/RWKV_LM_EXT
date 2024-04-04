@@ -84,7 +84,9 @@ from torch.utils.data import DataLoader
 def create_arg_parser():
     import argparse
     parser = argparse.ArgumentParser(description='peft train BiEncoder')
-    parser.add_argument('--train_data', type=str,nargs='+' ,help='parquet dicrectory containing the training data')
+    parser.add_argument('--train_data', type=str,help='parquet dicrectory containing the training data')
+    parser.add_argument('--train_lengths',type=int,nargs='+',default=[128,256,512,1024,2048,4096],help='length of the training data')
+    parser.add_argument('--train_batch_sizes', type=int,nargs='+', default=[32,16,8,4,2,1], help='batch size to train the model')
     parser.add_argument('--dev_data', type=str,nargs='+' ,help='parquet dicrectory containing the dev data')
     parser.add_argument('--model_file', type=str,default='/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth', help='model to be trained,now rwkv5 and rwkv6 are supported')
     parser.add_argument('--output_dir', type=str, default='/media/yueyulin/bigdata/tmp',help='directory to save the trained model')
@@ -118,7 +120,7 @@ def create_arg_parser():
     parser.add_argument('--epoch_save', type=int, default=1, help='number of epochs after which the model is saved')
     parser.add_argument('--max_epochs', type=int, default=150, help='maximum number of epochs for the training')
     parser.add_argument('--check_val_every_n_epoch', type=int, default=1, help='number of epochs after which the validation is checked')
-    parser.add_argument('--val_check_interval', type=int, default=1, help='number of epochs after which the validation is checked')
+    parser.add_argument('--val_check_interval', type=int, default=100, help='number of epochs after which the validation is checked')
     parser.add_argument('--num_sanity_val_steps', type=int, default=0, help='number of validation steps for sanity check at the beginning of training')
     parser.add_argument('--log_every_n_steps', type=int, default=1000, help='number of steps after which the training progress will be logged')
     parser.add_argument('--enable_checkpointing', type=bool, default=False, help='flag to enable checkpointing')
@@ -160,7 +162,8 @@ def read_dataset(data_path_list):
     for data_path in data_path_list:
         ds.append(load_from_disk(data_path))
     return concatenate_datasets(ds)
-
+from data.custom_datasets import read_dataset as read_variable_length_dataset
+from data.custom_datasets import MyBatchSampler,pad_and_truncated_according_data
 if __name__ == '__main__':
     parser = create_arg_parser()
     args = parser.parse_args()
@@ -169,11 +172,18 @@ if __name__ == '__main__':
     #print loading data from train_data in red
     import colorama
     print(colorama.Fore.RED + f'loading data from {args.train_data}')
-    ds = read_dataset(args.train_data)
-    args.epoch_steps = len(ds) // args.real_bsz
-    collator = partial(pad_and_truncated,max_len=args.max_seq_length)
-    train_dataloader = DataLoader(ds,batch_size=args.micro_bsz,shuffle=True,pin_memory=True,num_workers=4,collate_fn=collator)
+    ds = read_variable_length_dataset(args.train_data,args.train_lengths)
+    length_of_dataset = len(ds)
+    sum_of_batches = sum([(ds.cummulative_sizes[i]-(ds.cummulative_sizes[i-1] if i > 0 else 0))//args.train_lengths[i] for i in range(len(ds.cummulative_sizes))])
+    print(sum_of_batches)
+    batch_size = length_of_dataset // sum_of_batches
+    print(batch_size)
+    sampler = MyBatchSampler([i for i in range(len(ds))],batch_size,True,ds.cummulative_sizes,args.train_batch_sizes)
+    train_dataloader = DataLoader(ds,batch_sampler=sampler,collate_fn=pad_and_truncated_according_data)
 
+
+    args.epoch_steps = len(train_dataloader)//args.num_devices
+    collator = partial(pad_and_truncated,max_len=args.max_seq_length)
     #print loading dev data from dev_data in red
     print(colorama.Fore.RED + f'loading dev data from {args.dev_data}')
     dev_ds = read_dataset(args.dev_data)
@@ -233,9 +243,14 @@ if __name__ == '__main__':
                       enable_checkpointing=args.enable_checkpointing,
                       accumulate_grad_batches=args.accumulate_grad_batches,
                       gradient_clip_val=args.gradient_clip_val,
-                      val_check_interval=args.val_check_interval)
+                      val_check_interval=args.val_check_interval,
+                      use_distributed_sampler=False)
 
     
+    print("Current device rank: ", trainer.global_rank)
+    print("Total number of devices: ", trainer.world_size)
+    sampler.set_world_size(trainer.world_size)
+    sampler.rank = trainer.global_rank
 
     trainer.fit(embedding_model, 
                 train_dataloader,
