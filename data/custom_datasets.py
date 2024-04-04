@@ -47,7 +47,7 @@ class MyBatchSampler:
             batch = []
             batch_size = self.variable_batch_sizes[current_dataset_idx]
             for i in range(batch_size):
-                batch.append(self.cummulative_sizes[current_dataset_idx] - rest_batches_in_chunks[current_dataset_idx]*batch_size*self.world_size + i)
+                batch.append(self.cummulative_sizes[current_dataset_idx] - rest_batches_in_chunks[current_dataset_idx]*batch_size*self.world_size + i+self.rank*batch_size)
             rest_batches_in_chunks[current_dataset_idx] -= 1
             current_dataset_idx += 1
             if current_dataset_idx >= len(self.cummulative_sizes):
