@@ -63,6 +63,18 @@ def load_embedding_ckpt_and_parse_args(ckpt_file, args):
         traceback.print_exc()
         return None
 
+def create_empty_args():
+    import argparse
+    args = argparse.Namespace()
+    args.my_pos_emb = 0
+    args.pre_ffn = 0
+    args.head_size_divisor = 8
+    args.dropout = 0
+    args.head_qk = 0
+    args.ctx_len = 4096
+    args.grad_cp = 0
+    return args
+
 def load_ckpt_and_parse_args(ckpt_file, args):
     try:
         with torch.no_grad():
@@ -187,10 +199,10 @@ class RwkvForClassification(pl.LightningModule):
         lr_1x = sorted(list(lr_1x))
         lr_2x = sorted(list(lr_2x))
         lr_3x = sorted(list(lr_3x))
-        # print('decay', lr_decay)
-        # print('1x', lr_1x)
-        # print('2x', lr_2x)
-        # print('3x', lr_3x)
+        print('decay', lr_decay)
+        print('1x', lr_1x)
+        print('2x', lr_2x)
+        print('3x', lr_3x)
         param_dict = {n: p for n, p in self.named_parameters()}
         
         if args.layerwise_lr > 0:
@@ -208,15 +220,29 @@ class RwkvForClassification(pl.LightningModule):
                 ]
         else:
             optim_groups = [{"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0}]
-        print('optim_groups', optim_groups)
         if args.weight_decay > 0:
             optim_groups += [{"params": [param_dict[n] for n in lr_decay], "weight_decay": args.weight_decay, "my_lr_scale": 1.0}]
             return DeepSpeedCPUAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True,  weight_decay=args.weight_decay, amsgrad=False)
         else:
             return DeepSpeedCPUAdam(optim_groups, lr=self.args.lr_init, betas=self.args.betas, eps=self.args.adam_eps, bias_correction=True, weight_decay=0, amsgrad=False)
     
+    def validation_step(self, batch, batch_idx):
+        idx = batch['input_ids']
+        label = batch['labels']
+        logits = self.forward(idx)
+        if self.num_labels == 1:
+            loss_fct = nn.MSELoss()
+            label = label.bfloat16()
+            loss = loss_fct(logits.squeeze(), label.squeeze())
+        else:
+            loss_fct = nn.CrossEntropyLoss()
+            loss = loss_fct(logits.view(-1, self.num_labels), label.view(-1))
+        self.log('val_loss', loss)
+        return loss
+
     def training_step(self, batch, batch_idx):
-        idx, label = batch
+        idx = batch['input_ids']
+        label = batch['labels']
         logits = self.forward(idx)
         if self.num_labels == 1:
             loss_fct = nn.MSELoss()

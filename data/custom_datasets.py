@@ -105,7 +105,37 @@ def read_dataset(parent_dir,max_lengths):
         fixed_length_datasets.append(fixed_dataset)
     dataset = ConcatDataset(fixed_length_datasets)
     return dataset
-
+def cross_encoder_pad_and_truncated_according_data(features,pad_token_id=0,eos_token_id=1,sep_token_id=2):
+    max_len = features[0]['fixed_len']
+    query_ids = [feature['query'] for feature in features]
+    rand_pos_ids = [min(p, key=lambda x: abs(len(x) - max_len)) for p in [feature['pos'] for feature in features]]
+    rand_neg_ids = [min(n, key=lambda x: abs(len(x) - max_len)) for n in [feature['neg'] for feature in features]]
+    #create the data 
+    #{
+    #    "input_ids": to [query_ids sep_token_id rand_pos_ids eos_token_id pad_token_id*(max_len-pos_len)]+[query_ids sep_token_id rand_neg_ids eos_token_id pad_token_id*(max_len-neg_len)] 
+    #    "labels": [1,0]
+    #}
+    input_ids = []
+    labels = []
+    max_len = 0
+    for i in range(len(query_ids)):
+        pos_ids = rand_pos_ids[i]
+        neg_ids = rand_neg_ids[i]
+        q_ids = query_ids[i]
+        q_input_ids = q_ids + [sep_token_id] + pos_ids + [eos_token_id]
+        if len(q_input_ids) > max_len:
+            max_len = len(q_input_ids)
+        input_ids.append(q_input_ids)
+        labels.append(1)
+        q_input_ids = q_ids + [sep_token_id] + neg_ids + [eos_token_id]
+        if len(q_input_ids) > max_len:
+            max_len = len(q_input_ids)
+        input_ids.append(q_input_ids)
+        labels.append(0)
+    #pad the input_ids to max_len even the max_len is 2 bytes
+    input_ids = [q+[pad_token_id]*(max_len-len(q)) for q in input_ids]
+    return {'input_ids':torch.tensor(input_ids,dtype=torch.long),
+            'labels':torch.tensor(labels,dtype=torch.long)}
 if __name__ == '__main__':
     import os
     parent_dir = '/media/yueyulin/KINGSTON/tmp/parquet_chuncked/'
@@ -121,7 +151,7 @@ if __name__ == '__main__':
     batch_size = length_of_dataset // sum_of_batches
     print(batch_size)
     sampler = MyBatchSampler([i for i in range(length_of_dataset)],batch_size,True,dataset.cummulative_sizes,variable_batch_sizes)
-    dataloader = DataLoader(dataset, batch_sampler=sampler,collate_fn=pad_and_truncated_according_data)
+    dataloader = DataLoader(dataset, batch_sampler=sampler,collate_fn=cross_encoder_pad_and_truncated_according_data)
     print(len(dataloader))
     idx = 0
     sampler.set_world_size(8)
@@ -129,9 +159,8 @@ if __name__ == '__main__':
     for batch in dataloader:
         if idx % 100 == 0:
             print("minibatch:",idx)
-            print(batch['query'].shape)
-            print(batch['positive'].shape)
-            print(batch['negative'].shape)
+            print(batch['input_ids'].shape)
+            print(batch['labels'].shape)
         idx += 1
 
 

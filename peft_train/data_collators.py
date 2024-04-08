@@ -28,3 +28,5 @@ def pad_and_truncated_according_data(features, pad_token_id=0,eos_token_id=1):
     return {'query':torch.tensor(query_ids,dtype=torch.long),
             'positive':torch.tensor(rand_pos_ids,dtype=torch.long),
             'negative':torch.tensor(rand_neg_ids,dtype=torch.long)}    
+
+
