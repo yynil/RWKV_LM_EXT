@@ -75,7 +75,7 @@ class BiEncoder:
         return outputs
 if __name__ == '__main__':
     base_rwkv_model = '/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
-    lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/bi-encoder/add_mlp_in_batch_neg/epoch_0_step_100000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
+    lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/bi-encoder/add_mlp_in_batch_neg/epoch_0_step_200000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
     tokenizer_file = os.path.join(parent_dir,'tokenizer','rwkv_vocab_v20230424.txt')
     from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
     tokenizer = TRIE_TOKENIZER(tokenizer_file)
