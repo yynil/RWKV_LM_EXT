@@ -110,6 +110,7 @@ def load_ckpt_and_parse_args(ckpt_file, args):
                     n_head = w[x].shape[0]
 
             head_size_a = dim_att // n_head
+            args.n_head = n_head
             args.n_embd = n_embd
             args.dim_att = dim_att
             args.dim_ffn = dim_ffn
