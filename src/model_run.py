@@ -495,7 +495,7 @@ class L2Wrap(torch.autograd.Function):
         return (grad_output, gy)
 
 
-class RWKV(pl.LightningModule):
+class RWKV(torch.nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
@@ -577,7 +577,7 @@ class RWKV(pl.LightningModule):
             return x[-1,:],state
         
 
-class RwkvForSequenceEmbedding(pl.LightningModule):
+class RwkvForSequenceEmbedding(torch.nn.Module):
 
     def __init__(self, rwkvModel,embedding_id = 1, pad_id = 0,should_delete_head = True,pooling_type='weightedmean',add_mlp = False,output_dim = 0):
         super(RwkvForSequenceEmbedding, self).__init__()
@@ -652,7 +652,7 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
                 x = self.activation(self.dense(x))
             return x.squeeze(0),state
     
-class RwkvForClassification(pl.LightningModule):
+class RwkvForClassification(torch.nn.Module):
 
     def __init__(self, rwkvModel, num_labels=1,class_id = 1, pad_id = 0,should_delete_head = True):
         super(RwkvForClassification, self).__init__()
@@ -780,7 +780,7 @@ class BiEncoder:
         offset = 0
         while offset < len(input_ids):
             chunk = input_ids[offset:offset+chunk_size]
-            with torch.no_grad():
+            with torch.autocast(enabled=True,device_type='cuda',dtype=self.dtype):
                 outputs,state = self.rwkv_embedding(torch.tensor(chunk,dtype=torch.long,device=self.device),state=state)
             offset += len(chunk)
 
@@ -848,7 +848,7 @@ class CrossEncoder:
         state = None
         while offset < len(all_input_ids):
             chunk = all_input_ids[offset:offset+chunk_size]
-            with torch.no_grad():
+            with torch.autocast(enabled=True,device_type='cuda',dtype=self.dtype):
                 outputs,state = self.cross_encoder(torch.tensor(chunk,dtype=torch.long,device=self.device),state=state)
             offset += len(chunk)
         return outputs
@@ -957,7 +957,7 @@ def sample_logits(logits, temperature=1.0, top_p=0.85, top_k=0):
         return int(out)
     
 from rwkv.utils import PIPELINE_ARGS
-def generate(model, ctx,tokenizer, token_count=100, args=PIPELINE_ARGS(), callback=None, state=None):
+def generate(model, ctx,tokenizer, token_count=100, args=PIPELINE_ARGS(), callback=None, state=None,device='cuda'):
     all_tokens = []
     out_last = 0
     out_str = ''
@@ -967,7 +967,7 @@ def generate(model, ctx,tokenizer, token_count=100, args=PIPELINE_ARGS(), callba
         # forward & adjust prob.
         # tokens = tokenizer.encode(ctx) + [sep_id] if i == 0 else [token]
         tokens = tokenizer.encode(ctx) if i == 0 else [token]
-        tokens = torch.tensor(tokens, dtype=torch.long,device=model.device)
+        tokens = torch.tensor(tokens, dtype=torch.long,device=device)
         while len(tokens) > 0:
             out, state = model.forward(tokens[:args.chunk_len], state)
             tokens = tokens[args.chunk_len:]
@@ -1008,7 +1008,10 @@ def my_print(s):
     print(s, end='', flush=True)
 
 if __name__ == '__main__':
+    torch.backends.cudnn.benchmark = True
     ckpt = '/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
+    device = 'cuda'
+    dtype = torch.bfloat16
     args = create_empty_args()
     w = load_embedding_ckpt_and_parse_args(ckpt, args)
     print(args)
@@ -1030,28 +1033,15 @@ if __name__ == '__main__':
     tokenizer = TRIE_TOKENIZER(tokenizer_file)
     ctx = '你是一个编程助手，我会向你提出需求，你需要根据需求编写代码。\nBot:好的，请提出需求。\nUser：编写一个函数，输入一个Shape是(B,T,C)的张量，把一个全零的(C)张量扩展成(B,1,C)，和输入张量相加，最后变成(B,T+1,C)。请用PyTorch实现。\nBot:好的，请稍等。\n'
     print(tokenizer.encode(ctx))
-    model = model.float()
-    model = model.cuda()
+    model = model.to(dtype)
+    model = model.to(device)
     with torch.no_grad():
-        with torch.autocast(enabled=True,device_type='cuda',dtype=torch.float):
+        with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
             output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
         print(output)
 
-    # embedding_model = RwkvForSequenceEmbedding(model,embedding_id = 1, pad_id = 0,should_delete_head = False,pooling_type='weightedmean',add_mlp = True,output_dim = 1024)
-    # input_ids = tokenizer.encode(ctx)
-    # input_ids.append(1)
-    # input_ids = torch.tensor(input_ids,dtype=torch.long,device=model.device)
-    # embedding_model = embedding_model.float()
-    # embedding_model = embedding_model.cuda()
-    # embedding_model.eval()
-    # with torch.no_grad():
-    #     with torch.autocast(enabled=True,device_type='cuda',dtype=torch.float):
-    #         out,state = embedding_model(input_ids)
-    #     print(state)
-    #     print(out)
-    #     print(out.shape)
     lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/bi-encoder/add_mlp_in_batch_neg/epoch_0_step_200000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
-    bi_encoder = BiEncoder(model,lora_path,tokenizer,lora_type='lora',add_mlp=True,mlp_dim=1024,lora_r=8,lora_alpha=32,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],adapter_name='bi_embedding_lora',original_adapter_name='embedding_lora')
+    bi_encoder = BiEncoder(model,lora_path,tokenizer,dtype=dtype,lora_type='lora',add_mlp=True,mlp_dim=1024,lora_r=8,lora_alpha=32,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],adapter_name='bi_embedding_lora',original_adapter_name='embedding_lora')
     print(bi_encoder)
     embeddings = bi_encoder.encode_texts(output)
     print(embeddings)
@@ -1071,21 +1061,9 @@ if __name__ == '__main__':
 
         print('-----------------------')
 
-    classification_model = RwkvForClassification(model, num_labels=1,class_id = 1, pad_id = 0,should_delete_head = False)
-    sep_id = 2
-    input_ids = tokenizer.encode(texts[0])+[sep_id]+tokenizer.encode(texts[1])+[classification_model.class_id]
-    input_ids = torch.tensor(input_ids,dtype=torch.long,device=model.device)
-    classification_model = classification_model.float()
-    classification_model = classification_model.cuda()
-    classification_model.eval()
-    with torch.no_grad():
-        with torch.autocast(enabled=True,device_type='cuda',dtype=torch.float):
-            out,state = classification_model(input_ids)
-        print(state)
-        print(out)
-
+   
     cross_lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/cross-encoder/epoch_0_step_500000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
-    cross_encoder = CrossEncoder(model,cross_lora_path,tokenizer,lora_type='lora',lora_r=8,lora_alpha=32,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],adapter_name='cross_encoder_lora',original_adapter_name='embedding_lora',sep_token_id = 2)
+    cross_encoder = CrossEncoder(model,cross_lora_path,tokenizer,dtype=dtype,lora_type='lora',lora_r=8,lora_alpha=32,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],adapter_name='cross_encoder_lora',original_adapter_name='embedding_lora',sep_token_id = 2)
     print(cross_encoder)
     print(model)
     out  = cross_encoder.encode_texts(texts[0],texts[1])
@@ -1093,7 +1071,8 @@ if __name__ == '__main__':
 
     enable_lora(model,enable=False)
     with torch.no_grad():
-        output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
+        with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
+            output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
         print(output)
 
     texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
@@ -1112,7 +1091,8 @@ if __name__ == '__main__':
 
     enable_lora(model,enable=False)
     with torch.no_grad():
-        output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
+        with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
+            output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
         print(output)
 
     out  = cross_encoder.encode_texts(texts[0],"北京是中华人民共和国不可分割的一部分")
