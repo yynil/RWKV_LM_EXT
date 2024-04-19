@@ -770,11 +770,11 @@ class BiEncoder:
         self.device = device
         self.tokenizer = tokenizer
 
-    def encode_texts(self,text,chunk_size=128):
+    def encode_texts(self,text,chunk_size=1024):
         set_adapter(self.rwkv,self.adapter_name)
         MAX_LEN = 4096
         max_len = 0
-        input_ids =  self.tokenizer.encode(text)[0:MAX_LEN-1]
+        input_ids =  self.tokenizer.encode(text)
         input_ids.append(self.rwkv_embedding.embedding_id)
         state = None
         offset = 0
@@ -841,9 +841,7 @@ class CrossEncoder:
         max_len = 0
         text_a_ids = self.tokenizer.encode(text_a)
         text_b_ids = self.tokenizer.encode(text_b)
-        all_input_ids = text_a_ids + [self.sep_token_id]+text_b_ids
-        all_input_ids = all_input_ids[0:MAX_LEN-1]
-        all_input_ids.append(self.cross_encoder.class_id)
+        all_input_ids = text_a_ids + [self.sep_token_id]+text_b_ids+[self.cross_encoder.class_id]
         offset = 0
         state = None
         while offset < len(all_input_ids):
@@ -919,6 +917,130 @@ def create_empty_args():
     args.ctx_len = 4096
     args.grad_cp = 0
     return args
+
+class BiCrossFusionEncoder:
+    """
+    This encoder is to fuse the bi-encoder and cross-encoder with the same rwkv base model injected with 2 sets of lora adapters.
+    We have 2 assumptions here:
+    1. The bi-encoder and cross-encoder share the same base model
+    2. The lora types of bi-encoder and cross-encoder are the same
+    This class instance is not thread-safe since we need to switch the adapter name before encoding.
+    """
+    def __init__(self,
+                 rwkv,
+                 bi_lora_path,
+                 cross_lora_path,
+                 tokenizer,
+                 dtype=torch.float,
+                 device='cuda',
+                 lora_type='lora',
+                 lora_r=8,
+                 lora_alpha=32,
+                 add_mlp=True,
+                 mlp_dim=1024,
+                 target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],
+                 cross_adapter_name='cross_encoder_lora',
+                 original_cross_adapter_name='embedding_lora',
+                 bi_adapter_name='bi_embedding_lora',
+                 original_bi_adapter_name='embedding_lora',
+                 sep_token_id = 2,
+                 should_delete_head = False
+                 ) -> None:
+        #load cross encoder and inject cross adapter
+        cross_lora_config = None
+        if lora_type == 'lora':
+            from peft import LoraConfig
+            cross_lora_config = LoraConfig(r=lora_r,lora_alpha=lora_alpha,target_modules=target_modules,lora_dropout=0)
+        elif lora_type == 'adalora':
+            from peft import AdaLoraConfig
+            cross_lora_config = AdaLoraConfig(r=lora_r,lora_alpha=lora_alpha,target_modules=target_modules,lora_dropout=0)
+        from peft import inject_adapter_in_model
+        rwkv = inject_adapter_in_model(cross_lora_config,rwkv,adapter_name=cross_adapter_name)
+
+        #load bi encoder and inject bi adapter
+        bi_lora_config = None
+        if lora_type == 'lora':
+            from peft import LoraConfig
+            bi_lora_config = LoraConfig(r=lora_r,lora_alpha=lora_alpha,target_modules=target_modules,lora_dropout=0)
+        elif lora_type == 'adalora':
+            from peft import AdaLoraConfig
+            bi_lora_config = AdaLoraConfig(r=lora_r,lora_alpha=lora_alpha,target_modules=target_modules,lora_dropout=0)
+        rwkv = inject_adapter_in_model(bi_lora_config,rwkv,adapter_name=bi_adapter_name)
+
+        self.cross_encoder = RwkvForClassification(rwkv,should_delete_head=should_delete_head)
+        self.bi_encoder = RwkvForSequenceEmbedding(rwkv,add_mlp=add_mlp,output_dim=mlp_dim,should_delete_head=should_delete_head)
+
+        self.tokenizer = tokenizer
+        self.sep_token_id = sep_token_id
+
+        #load cross encoder lora params
+        with torch.no_grad():
+            w = torch.load(cross_lora_path)
+            #replace keys with original adapter name to new adapter name
+            if original_cross_adapter_name != cross_adapter_name:
+                print(f'origal_keys:{list(w.keys())}')
+                for k in list(w.keys()):
+                    if original_cross_adapter_name in k:
+                        new_k = k.replace(original_cross_adapter_name,cross_adapter_name)
+                        w[new_k] = w.pop(k)
+            info = self.cross_encoder.load_state_dict(w,strict=False)
+            print(f'load model from {cross_lora_path},result is {info}')
+        self.cross_encoder = self.cross_encoder.to(dtype)
+        self.cross_encoder = self.cross_encoder.to(device)
+        self.cross_encoder.eval()
+
+        #load bi encoder lora params
+        with torch.no_grad():
+            w = torch.load(bi_lora_path)
+            #replace keys with original adapter name to new adapter name
+            if original_bi_adapter_name != bi_adapter_name:
+                print(f'origal_keys:{list(w.keys())}')
+                for k in list(w.keys()):
+                    if original_bi_adapter_name in k:
+                        new_k = k.replace(original_bi_adapter_name,bi_adapter_name)
+                        w[new_k] = w.pop(k)
+            info = self.bi_encoder.load_state_dict(w,strict=False)
+            print(f'load model from {bi_lora_path},result is {info}')
+        self.bi_encoder = self.bi_encoder.to(dtype)
+        self.bi_encoder = self.bi_encoder.to(device)
+        self.bi_encoder.eval()
+
+        self.bi_adapter_name = bi_adapter_name
+        self.cross_adapter_name = cross_adapter_name
+        self.rwkv = rwkv
+        self.dtype = dtype
+        self.device = device
+
+        print(f'inject lora from {cross_lora_path} and {bi_lora_path} to model,result is {rwkv}')
+
+
+    def encode_texts(self,text,chunk_size=1024):
+        set_adapter(self.rwkv,self.bi_adapter_name)
+        input_ids =  self.tokenizer.encode(text)
+        input_ids.append(self.bi_encoder.embedding_id)
+        state = None
+        offset = 0
+        while offset < len(input_ids):
+            chunk = input_ids[offset:offset+chunk_size]
+            with torch.autocast(enabled=True,device_type='cuda',dtype=self.dtype):
+                outputs,state = self.bi_encoder(torch.tensor(chunk,dtype=torch.long,device=self.device),state=state)
+            offset += len(chunk)
+
+        return outputs
+    
+    def cross_encode_texts(self,text_a, text_b,chunk_size=1024):
+        set_adapter(self.rwkv,self.cross_adapter_name)
+        text_a_ids = self.tokenizer.encode(text_a)
+        text_b_ids = self.tokenizer.encode(text_b)
+        all_input_ids = text_a_ids + [self.sep_token_id]+text_b_ids+[self.cross_encoder.class_id]
+        offset = 0
+        state = None
+        while offset < len(all_input_ids):
+            chunk = all_input_ids[offset:offset+chunk_size]
+            with torch.autocast(enabled=True,device_type='cuda',dtype=self.dtype):
+                outputs,state = self.cross_encoder(torch.tensor(chunk,dtype=torch.long,device=self.device),state=state)
+            offset += len(chunk)
+        return outputs
 
 import numpy as np
 from torch.nn import functional as F
@@ -1008,6 +1130,75 @@ def my_print(s):
     print(s, end='', flush=True)
 
 if __name__ == '__main__':
+    torch.backends.cudnn.benchmark = True
+    ckpt = '/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
+    device = 'cuda'
+    dtype = torch.bfloat16
+    args = create_empty_args()
+    w = load_embedding_ckpt_and_parse_args(ckpt, args)
+    print(args)
+    model = RWKV(args)
+    info = model.load_state_dict(w)
+    model.eval()
+    print(model)
+    print(info)
+    gen_args = PIPELINE_ARGS(temperature = 1.0, top_p = 0.8, top_k = 100, # top_k = 0 then ignore
+                        alpha_frequency = 0.25,
+                        alpha_presence = 0.25,
+                        alpha_decay = 0.996, # gradually decay the penalty
+                        token_ban = [], # ban the generation of some tokens
+                        token_stop = [0,2], # stop generation whenever you see any token here
+                        chunk_len = 256) # split input into chunks to save VRAM (shorter -> slower)
+    tokenizer_file = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),'tokenizer','rwkv_vocab_v20230424.txt')
+    from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
+    tokenizer = TRIE_TOKENIZER(tokenizer_file)
+    ctx = '你是一个编程助手，我会向你提出需求，你需要根据需求编写代码。\nBot:好的，请提出需求。\nUser：编写一个函数，输入一个Shape是(B,T,C)的张量，把一个全零的(C)张量扩展成(B,1,C)，和输入张量相加，最后变成(B,T+1,C)。请用PyTorch实现。\nBot:好的，请稍等。\n'
+    print(tokenizer.encode(ctx))
+    model = model.to(dtype)
+    model = model.to(device)
+    with torch.no_grad():
+        with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
+            output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
+        print(output)
+
+    bi_lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/bi-encoder/add_mlp_in_batch_neg/epoch_0_step_200000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
+    cross_lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/cross-encoder/epoch_0_step_500000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
+    fusedEncoder = BiCrossFusionEncoder(model,bi_lora_path,cross_lora_path,tokenizer,dtype=dtype,lora_type='lora',lora_r=8,lora_alpha=32,add_mlp=True,mlp_dim=1024,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],cross_adapter_name='cross_encoder_lora',original_cross_adapter_name='embedding_lora',bi_adapter_name='bi_embedding_lora',original_bi_adapter_name='embedding_lora',sep_token_id = 2)
+    print(fusedEncoder.bi_encoder)
+    print(fusedEncoder.cross_encoder)
+
+    texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
+    outputs = [fusedEncoder.encode_texts(text) for text in texts]
+    print(outputs)
+    from sentence_transformers.util import pairwise_cos_sim
+    for qid in range(len(texts)):
+        query = outputs[qid]
+        for i in range(len(texts)):
+            if i != qid:
+                print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
+
+        print('-----------------------')
+    enable_lora(model,enable=False)
+    with torch.no_grad():
+        with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
+            output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
+        print(output)
+
+    out  = fusedEncoder.cross_encode_texts(texts[0],"北京是中华人民共和国不可分割的一部分")
+    print(out)
+
+    out = fusedEncoder.cross_encode_texts(texts[0],output)
+    print(out)
+
+    out = fusedEncoder.cross_encode_texts(texts[0],texts[1])
+    print(out)
+    out = fusedEncoder.cross_encode_texts(texts[0],texts[2])
+    print(out)
+    out = fusedEncoder.cross_encode_texts(texts[0],texts[3])
+    print(out)
+    out = fusedEncoder.cross_encode_texts(texts[2],texts[3])
+    print(out)
+if __name__ == '__main__1':
     torch.backends.cudnn.benchmark = True
     ckpt = '/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
     device = 'cuda'
