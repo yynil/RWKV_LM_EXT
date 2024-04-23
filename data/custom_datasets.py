@@ -18,7 +18,7 @@ class FixedLenDataset(Dataset):
     
 class MyBatchSampler:
 
-    def __init__(self, sampler: Union[Sampler[int], Iterable[int]], batch_size: int, drop_last: bool,cummulative_sizes,variable_batch_sizes) -> None:
+    def __init__(self, sampler: Union[Sampler[int], Iterable[int]], batch_size: int, drop_last: bool,cummulative_sizes,variable_batch_sizes,skip_batches=0) -> None:
         self.batch_size = batch_size
         self.drop_last = drop_last
         self._sampler = sampler
@@ -28,8 +28,10 @@ class MyBatchSampler:
         self.__pl_saved_args = (sampler,batch_size,drop_last,cummulative_sizes,variable_batch_sizes)
         self.world_size = 1
         self.rank = 0
-        self.all_batches = sum([(self.cummulative_sizes[i]-(self.cummulative_sizes[i-1] if i > 0 else 0))//(self.variable_batch_sizes[i]*self.world_size) for i in range(len(self.cummulative_sizes))])
-
+        self.all_batches = sum([(self.cummulative_sizes[i]-(self.cummulative_sizes[i-1] if i > 0 else 0))//(self.variable_batch_sizes[i]*self.world_size) for i in range(len(self.cummulative_sizes))])-self.skip_batches
+        self.skip_batches = skip_batches
+        #log the arguments 
+        print(f"Arguments: {self.__pl_saved_args}")
     @property
     def sampler(self):
         return self._sampler
@@ -37,6 +39,16 @@ class MyBatchSampler:
     def __iter__(self) -> Iterator[List[int]]:
         current_dataset_idx = 0
         rest_batches_in_chunks = [(self.cummulative_sizes[i]-(self.cummulative_sizes[i-1] if i > 0 else 0))//(self.variable_batch_sizes[i]*self.world_size) for i in range(len(self.cummulative_sizes))]
+        # Skip the first 'skip_batches' batches
+        for _ in range(self.skip_batches):
+            while rest_batches_in_chunks[current_dataset_idx] == 0:
+                current_dataset_idx += 1
+                if current_dataset_idx >= len(self.cummulative_sizes):
+                    current_dataset_idx = 0
+            rest_batches_in_chunks[current_dataset_idx] -= 1
+            current_dataset_idx += 1
+            if current_dataset_idx >= len(self.cummulative_sizes):
+                current_dataset_idx = 0
         while sum(rest_batches_in_chunks) > 0:
             #get next available data chunk
             while rest_batches_in_chunks[current_dataset_idx] == 0:
