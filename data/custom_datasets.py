@@ -197,53 +197,55 @@ if __name__ == '__main__':
 
     dataset = dataset.map(tokenize_function_mapper,remove_columns=['id', 'url', 'title', 'text'],num_proc=8,batched=False)
     print(dataset)
-    lens_arr = [len(d['input_ids']) for d in dataset['train']]
-    import numpy as np
-    np_lens = np.array(lens_arr)
-    print(f'mean:{np.mean(np_lens)},std:{np.std(np_lens)},max:{np.max(np_lens)},min:{np.min(np_lens)}')
+
+
+    # lens_arr = [len(d['input_ids']) for d in dataset['train']]
+    # import numpy as np
+    # np_lens = np.array(lens_arr)
+    # print(f'mean:{np.mean(np_lens)},std:{np.std(np_lens)},max:{np.max(np_lens)},min:{np.min(np_lens)}')
     # mean:666.2608444616568,std:1663.562477753756,max:173034,min:8
 
-    # chunk_size = 255
-    # def chunk_examples(examples):
-    #     all_input_ids = examples['input_ids']
-    #     chunks = {'input_ids': []}
-    #     for input_ids in all_input_ids:
-    #         for i in range(0,len(input_ids),chunk_size):
-    #             chunks['input_ids'].append(input_ids[i:i+chunk_size])
-    #     return chunks
+    chunk_size = 255
+    def chunk_examples(examples):
+        all_input_ids = examples['input_ids']
+        chunks = {'input_ids': []}
+        for input_ids in all_input_ids:
+            for i in range(0,len(input_ids),chunk_size):
+                chunks['input_ids'].append(input_ids[i:i+chunk_size])
+        return chunks
     
-    # dataset = dataset.map(chunk_examples,batched=True,num_proc=8,remove_columns=['input_ids'],batch_size=8)
-    # print(dataset)
+    dataset = dataset.map(chunk_examples,batched=True,num_proc=8,remove_columns=['input_ids'],batch_size=8)
+    print(dataset)
+    output_dir = '/media/yueyulin/data_4t/datasets/en_wiki_tokenized_chunked_255'
+    dataset.save_to_disk(output_dir)
+
     # output_dir = '/media/yueyulin/data_4t/datasets/zh_wiki_tokenized_chunked_255'
-    # dataset.save_to_disk(output_dir)
+    # ds = load_from_disk(output_dir)
+    # print(ds)
+    # def pad_and_truncated(features, max_len, pad_token_id=0,eos_token_id=1):
+    #     query_ids = [feature+[eos_token_id] for feature in features['input_ids']]
+    #     query_ids = [q[:max_len] for q in query_ids]
+    #     query_ids = [q+[pad_token_id]*(max_len-len(q)) for q in query_ids]
+    #     #clone the query_ids as positive_ids
+    #     positive_ids = [q for q in query_ids]
+    #     return {'query':query_ids,
+    #             'positive':positive_ids}
+    # max_len = 256
+    # from functools import partial
+    # pad_and_truncated_partial = partial(pad_and_truncated,max_len=max_len)
+    # ds = ds.map(pad_and_truncated_partial,batched=True,num_proc=8,remove_columns=['input_ids'])
+    # print(ds)
+    # print(ds['train'])
+    # print(ds['train'][0])
+    # def collate_fn(batch):
+    #     query = [b['query'] for b in batch]
+    #     positive = [b['positive'] for b in batch]
+    #     return {'query':torch.tensor(query,dtype=torch.long),'positive':torch.tensor(positive,dtype=torch.long)}
+    # dataloader = DataLoader(ds['train'],batch_size=8,collate_fn=collate_fn)
+    # for batch in dataloader:
+    #     print(batch['query'])
+    #     print(batch['positive'])
+    #     print(batch['query'].shape)
+    #     print(batch['positive'].shape)
 
-    output_dir = '/media/yueyulin/data_4t/datasets/zh_wiki_tokenized_chunked_255'
-    ds = load_from_disk(output_dir)
-    print(ds)
-    def pad_and_truncated(features, max_len, pad_token_id=0,eos_token_id=1):
-        query_ids = [feature+[eos_token_id] for feature in features['input_ids']]
-        query_ids = [q[:max_len] for q in query_ids]
-        query_ids = [q+[pad_token_id]*(max_len-len(q)) for q in query_ids]
-        #clone the query_ids as positive_ids
-        positive_ids = [q for q in query_ids]
-        return {'query':query_ids,
-                'positive':positive_ids}
-    max_len = 256
-    from functools import partial
-    pad_and_truncated_partial = partial(pad_and_truncated,max_len=max_len)
-    ds = ds.map(pad_and_truncated_partial,batched=True,num_proc=8,remove_columns=['input_ids'])
-    print(ds)
-    print(ds['train'])
-    print(ds['train'][0])
-    def collate_fn(batch):
-        query = [b['query'] for b in batch]
-        positive = [b['positive'] for b in batch]
-        return {'query':torch.tensor(query,dtype=torch.long),'positive':torch.tensor(positive,dtype=torch.long)}
-    dataloader = DataLoader(ds['train'],batch_size=8,collate_fn=collate_fn)
-    for batch in dataloader:
-        print(batch['query'])
-        print(batch['positive'])
-        print(batch['query'].shape)
-        print(batch['positive'].shape)
-
-        break 
+    #     break 
