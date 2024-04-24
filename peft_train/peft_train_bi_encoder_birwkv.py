@@ -76,20 +76,22 @@ os.environ["RWKV_MY_TESTING"]='x060'
 os.environ['RWKV_CTXLEN'] = '4096'
 
 from peft_train.Callbacks import TrainerCallback
+from src.model_ext import load_ckpt_and_parse_args
 from src.model_bi import RWKV
-from src.model_bi import RwkvForSequenceEmbedding, load_ckpt_and_parse_args
+from src.model_bi import RwkvForSequenceEmbedding
 from peft_train.data_collators import pad_and_truncated
 import torch
 from torch.utils.data import DataLoader
 def create_arg_parser():
     import argparse
     parser = argparse.ArgumentParser(description='peft train BiEncoder')
-    parser.add_argument('--train_data', type=str,help='parquet dicrectory containing the training data')
+    parser.add_argument('--train_data', type=str,help='parquet dicrectory containing the training data',default='/media/yueyulin/data_4t/datasets/zh_wiki_tokenized_chunked_255')
     parser.add_argument('--train_lengths',type=int,nargs='+',default=[128,256,512,1024,2048,4096],help='length of the training data')
     parser.add_argument('--train_batch_sizes', type=int,nargs='+', default=[32,16,8,4,2,1], help='batch size to train the model')
+    parser.add_argument('--batch_size', type=int, default=8, help='batch size to train the model')
     parser.add_argument('--dev_data', type=str,nargs='+' ,help='parquet dicrectory containing the dev data')
-    parser.add_argument('--model_file', type=str,default='/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth', help='model to be trained,now rwkv5 and rwkv6 are supported')
-    parser.add_argument('--output_dir', type=str, default='/media/yueyulin/bigdata/tmp',help='directory to save the trained model')
+    parser.add_argument('--model_file', type=str,default='/media/yueyulin/KINGSTON/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth', help='model to be trained,now rwkv5 and rwkv6 are supported')
+    parser.add_argument('--output_dir', type=str, default='/media/yueyulin/KINGSTON/models/rwkv6/tmp',help='directory to save the trained model')
     parser.add_argument('--num_epochs', type=int, default=150, help='number of epochs to train the model')
     parser.add_argument('--max_seq_length', type=int, default=128, help='maximum sequence length to train the model')
     parser.add_argument('--add_mlp', action='store_true', help='flag to add mlp to the model')
@@ -136,6 +138,7 @@ def create_arg_parser():
     parser.add_argument('--eval_every_steps', type=int, default=100, help='number of steps after which the model is evaluated')
     parser.add_argument('--wandb', type=str, default='peft', help='wandb project name')
     parser.add_argument('--run_name', type=str, default='peft_bi_encoder_trainer', help='run name for wandb logging')
+    parser.add_argument('--is_unsupervised', action='store_true', help='flag to use unsupervised training',default=False)
 
     #add peft arguments
     parser.add_argument('--lora_type', type=str, default='lora', help='lora type', choices=['lora','adalora'])
@@ -172,22 +175,44 @@ if __name__ == '__main__':
     #print loading data from train_data in red
     import colorama
     print(colorama.Fore.RED + f'loading data from {args.train_data}')
-    ds = read_variable_length_dataset(args.train_data,args.train_lengths)
-    length_of_dataset = len(ds)
-    sum_of_batches = sum([(ds.cummulative_sizes[i]-(ds.cummulative_sizes[i-1] if i > 0 else 0))//args.train_lengths[i] for i in range(len(ds.cummulative_sizes))])
-    print(sum_of_batches)
-    batch_size = length_of_dataset // sum_of_batches
-    print(batch_size)
-    sampler = MyBatchSampler([i for i in range(len(ds))],batch_size,True,ds.cummulative_sizes,args.train_batch_sizes)
-    train_dataloader = DataLoader(ds,batch_sampler=sampler,collate_fn=pad_and_truncated_according_data)
+    if args.is_unsupervised:
+        from datasets import load_from_disk
+        ds = load_from_disk(args.train_data)
+        def pad_and_truncated(features, max_len, pad_token_id=0,eos_token_id=1):
+            query_ids = [feature+[eos_token_id] for feature in features['input_ids']]
+            query_ids = [q[:max_len] for q in query_ids]
+            query_ids = [q+[pad_token_id]*(max_len-len(q)) for q in query_ids]
+            #clone the query_ids as positive_ids
+            positive_ids = [q for q in query_ids]
+            return {'query':torch.tensor(query_ids,dtype=torch.long),
+                    'positive':torch.tensor(positive_ids,dtype=torch.long)}
+        max_len = 256
+        from functools import partial
+        pad_and_truncated_partial = partial(pad_and_truncated,max_len=max_len)
+        ds = ds.map(pad_and_truncated_partial,batched=True,num_proc=8,remove_columns=['input_ids'])
+        print(ds)
+        def collate_fn(batch):
+            query = [b['query'] for b in batch]
+            positive = [b['positive'] for b in batch]
+            return {'query':torch.tensor(query,dtype=torch.long),'positive':torch.tensor(positive,dtype=torch.long)}
+        train_dataloader = DataLoader(ds['train'],batch_size=args.batch_size,collate_fn=collate_fn)
+    else:
+        ds = read_variable_length_dataset(args.train_data,args.train_lengths)
+        length_of_dataset = len(ds)
+        sum_of_batches = sum([(ds.cummulative_sizes[i]-(ds.cummulative_sizes[i-1] if i > 0 else 0))//args.train_lengths[i] for i in range(len(ds.cummulative_sizes))])
+        print(sum_of_batches)
+        batch_size = length_of_dataset // sum_of_batches
+        print(batch_size)
+        sampler = MyBatchSampler([i for i in range(len(ds))],batch_size,True,ds.cummulative_sizes,args.train_batch_sizes)
+        train_dataloader = DataLoader(ds,batch_sampler=sampler,collate_fn=pad_and_truncated_according_data)
 
 
     args.epoch_steps = len(train_dataloader)//args.num_devices
     collator = partial(pad_and_truncated,max_len=args.max_seq_length)
     #print loading dev data from dev_data in red
-    print(colorama.Fore.RED + f'loading dev data from {args.dev_data}')
-    dev_ds = read_dataset(args.dev_data)
-    dev_dataloader = DataLoader(dev_ds,batch_size=args.micro_bsz,shuffle=False,pin_memory=True,num_workers=4,collate_fn=collator)
+    # print(colorama.Fore.RED + f'loading dev data from {args.dev_data}')
+    # dev_ds = read_dataset(args.dev_data)
+    # dev_dataloader = DataLoader(dev_ds,batch_size=args.micro_bsz,shuffle=False,pin_memory=True,num_workers=4,collate_fn=collator)
 
     
     w = load_ckpt_and_parse_args(args.model_file,args)
@@ -249,9 +274,11 @@ if __name__ == '__main__':
     
     print("Current device rank: ", trainer.global_rank)
     print("Total number of devices: ", trainer.world_size)
-    sampler.set_world_size(trainer.world_size)
-    sampler.rank = trainer.global_rank
+    if not args.is_unsupervised:
+        sampler.set_world_size(trainer.world_size)
+        sampler.rank = trainer.global_rank
 
     trainer.fit(embedding_model, 
                 train_dataloader,
-                dev_dataloader)
+                # dev_dataloader
+                )
