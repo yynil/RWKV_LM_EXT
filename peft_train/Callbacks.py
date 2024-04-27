@@ -94,7 +94,7 @@ class TrainerCallback(pl.Callback):
         args = self.args
         token_per_step = args.ctx_len * args.real_bsz
         real_step = trainer.global_step + args.epoch_begin * args.epoch_steps
-        if trainer.is_global_zero:  # logging   
+        if trainer.is_global_zero and batch_idx > args.skip_steps:  # logging   
             if real_step % args.log_every_n_steps == 0:
                 print(f'saving trainable to {args.trainable_dir_output}')
                 print(f"{real_step} {trainer.my_loss:.6f} {math.exp(trainer.my_loss):.4f}  {trainer.current_epoch}, now saving...")
