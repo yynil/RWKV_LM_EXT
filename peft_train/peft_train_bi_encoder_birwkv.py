@@ -262,7 +262,7 @@ if __name__ == '__main__':
     if args.peft_checkpoint is not None:
         #load the peft checkpoint
         w = torch.load(args.peft_checkpoint,map_location='cpu')
-        infom = rwkv_base_model.load_state_dict(w,strict=False)
+        infom = embedding_model.load_state_dict(w,strict=False)
         print(colorama.Fore.RED + f'load peft checkpoint from {args.peft_checkpoint} with {infom}'+colorama.Style.RESET_ALL)
 
     #Train the model
