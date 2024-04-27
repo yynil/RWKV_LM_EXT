@@ -1118,7 +1118,7 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         args = self.rwkvModel.args
         if batch_idx <= args.skip_steps:
-            return torch.tensor(0.0)
+            return torch.tensor(0.0,requires_grad=True)
         query = batch["query"]#size is (bs,seq_len)
         positive = batch["positive"]#size is (bs,seq_len)
         if "negative" in batch:
