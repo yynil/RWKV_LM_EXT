@@ -195,14 +195,11 @@ if __name__ == '__main__':
         pad_and_truncated_partial = partial(pad_and_truncated,max_len=max_len)
         ds = ds.map(pad_and_truncated_partial,batched=True,num_proc=8,remove_columns=['input_ids'])
         print(ds)
-        if args.skip_steps > 0:
-            print(colorama.Fore.RED + f'skip {args.skip_steps} steps'+colorama.Style.RESET_ALL)
-            ds = ds['train'][0:args.skip_steps*args.batch_size]
         def collate_fn(batch):
             query = [b['query'] for b in batch]
             positive = [b['positive'] for b in batch]
             return {'query':torch.tensor(query,dtype=torch.long),'positive':torch.tensor(positive,dtype=torch.long)}
-        train_dataloader = DataLoader(ds,batch_size=args.batch_size,collate_fn=collate_fn)
+        train_dataloader = DataLoader(ds['train'],batch_size=args.batch_size,collate_fn=collate_fn)
     else:
         ds = read_variable_length_dataset(args.train_data,args.train_lengths)
         length_of_dataset = len(ds)
@@ -210,14 +207,17 @@ if __name__ == '__main__':
         print(sum_of_batches)
         batch_size = length_of_dataset // sum_of_batches
         print(batch_size)
-        if args.skip_steps > 0:
-            print(colorama.Fore.RED + f'skip {args.skip_steps} steps'+colorama.Style.RESET_ALL)
-            ds = ds[0:args.skip_steps*int(batch_size)]
         sampler = MyBatchSampler([i for i in range(len(ds))],batch_size,True,ds.cummulative_sizes,args.train_batch_sizes)
         train_dataloader = DataLoader(ds,batch_sampler=sampler,collate_fn=pad_and_truncated_according_data)
     
     total_steps = len(train_dataloader)
-    args.epoch_steps = len(train_dataloader)//args.num_devices
+    if args.skip_steps > 0:
+        import itertools
+        print(colorama.Fore.RED + f'skip {args.skip_steps} steps'+colorama.Style.RESET_ALL)
+        train_dataloader = itertools.islice(train_dataloader,args.skip_steps,None)
+        args.epoch_steps = (total_steps - args.skip_steps) // args.num_devices
+    else:
+        args.epoch_steps = len(train_dataloader)//args.num_devices
     collator = partial(pad_and_truncated,max_len=args.max_seq_length)
     #print loading dev data from dev_data in red
     # print(colorama.Fore.RED + f'loading dev data from {args.dev_data}')
