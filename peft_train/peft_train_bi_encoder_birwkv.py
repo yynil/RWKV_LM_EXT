@@ -211,13 +211,7 @@ if __name__ == '__main__':
         train_dataloader = DataLoader(ds,batch_sampler=sampler,collate_fn=pad_and_truncated_according_data)
     
     total_steps = len(train_dataloader)
-    if args.skip_steps > 0:
-        import itertools
-        print(colorama.Fore.RED + f'skip {args.skip_steps} steps'+colorama.Style.RESET_ALL)
-        train_dataloader = itertools.islice(train_dataloader,args.skip_steps,None)
-        args.epoch_steps = (total_steps - args.skip_steps) // args.num_devices
-    else:
-        args.epoch_steps = len(train_dataloader)//args.num_devices
+    args.epoch_steps = len(train_dataloader)//args.num_devices
     collator = partial(pad_and_truncated,max_len=args.max_seq_length)
     #print loading dev data from dev_data in red
     # print(colorama.Fore.RED + f'loading dev data from {args.dev_data}')
