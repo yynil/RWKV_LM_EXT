@@ -197,12 +197,12 @@ if __name__ == '__main__':
         print(ds)
         if args.skip_steps > 0:
             print(colorama.Fore.RED + f'skip {args.skip_steps} steps'+colorama.Style.RESET_ALL)
-            ds = ds[0:args.skip_steps*args.batch_size]
+            ds = ds['train'][0:args.skip_steps*args.batch_size]
         def collate_fn(batch):
             query = [b['query'] for b in batch]
             positive = [b['positive'] for b in batch]
             return {'query':torch.tensor(query,dtype=torch.long),'positive':torch.tensor(positive,dtype=torch.long)}
-        train_dataloader = DataLoader(ds['train'],batch_size=args.batch_size,collate_fn=collate_fn)
+        train_dataloader = DataLoader(ds,batch_size=args.batch_size,collate_fn=collate_fn)
     else:
         ds = read_variable_length_dataset(args.train_data,args.train_lengths)
         length_of_dataset = len(ds)
