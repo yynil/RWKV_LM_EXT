@@ -146,6 +146,10 @@ def create_arg_parser():
     parser.add_argument('--lora_r',type=int,default=8)
     parser.add_argument('--lora_alpha',type=int,default=32)
     parser.add_argument('--lora_dropout',type=float,default=0.1)
+
+    #add lask peft checkpoint path
+    parser.add_argument('--peft_checkpoint',type=str,help='peft checkpoint path',default=None)
+    parser.add_argument('--skip_steps',type=int,default=0,help='skip steps in the peft checkpoint')
     return parser
 
 def configure_args(args):
@@ -206,6 +210,10 @@ if __name__ == '__main__':
         sampler = MyBatchSampler([i for i in range(len(ds))],batch_size,True,ds.cummulative_sizes,args.train_batch_sizes)
         train_dataloader = DataLoader(ds,batch_sampler=sampler,collate_fn=pad_and_truncated_according_data)
 
+    if args.skip_steps > 0:
+        import itertools
+        print(colorama.Fore.RED + f'skip {args.skip_steps} steps'+colorama.Style.RESET_ALL)
+        train_dataloader = itertools.islice(train_dataloader,args.skip_steps,None)
 
     args.epoch_steps = len(train_dataloader)//args.num_devices
     collator = partial(pad_and_truncated,max_len=args.max_seq_length)
@@ -223,7 +231,6 @@ if __name__ == '__main__':
     print(inform)
 
 
-
     #Configure the peft configuration to inject 
     lora_config = None
     if args.lora_type == 'lora':
@@ -237,6 +244,12 @@ if __name__ == '__main__':
     from peft import inject_adapter_in_model
     rwkv_base_model = inject_adapter_in_model(lora_config,rwkv_base_model,adapter_name='embedding_lora')
     print(rwkv_base_model)
+    if args.peft_checkpoint is not None:
+        #load the peft checkpoint
+        w = torch.load(args.peft_checkpoint,map_location='cpu')
+        infom = rwkv_base_model.load_state_dict(w,strict=False)
+        print(colorama.Fore.RED + f'load peft checkpoint from {args.peft_checkpoint} with {infom}'+colorama.Style.RESET_ALL)
+
     def print_trainable_params(model):
         #count whole model parameters and print trainable parameters' count and percentage
         total_params = sum(p.numel() for p in model.parameters())
