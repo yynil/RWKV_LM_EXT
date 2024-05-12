@@ -243,7 +243,7 @@ if __name__ == '__main__':
 
     #Train the model
     # device = "auto"
-    trainer = Trainer(accelerator=None,
+    trainer = Trainer(accelerator="auto",
                       strategy="deepspeed_stage_2_offload",
                       devices='auto',
                       num_nodes=args.num_nodes,
