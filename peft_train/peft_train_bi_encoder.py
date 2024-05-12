@@ -136,6 +136,7 @@ def create_arg_parser():
     parser.add_argument('--eval_every_steps', type=int, default=100, help='number of steps after which the model is evaluated')
     parser.add_argument('--wandb', type=str, default='peft', help='wandb project name')
     parser.add_argument('--run_name', type=str, default='peft_bi_encoder_trainer', help='run name for wandb logging')
+    parser.add_argument('--strategy', type=str, default='deepspeed_stage_2_offload', help='strategy for distributed training', choices=['deepspeed_stage_2_offload','deepspeed_stage_3_offload'])
 
     #add peft arguments
     parser.add_argument('--lora_type', type=str, default='lora', help='lora type', choices=['lora','adalora'])
@@ -244,7 +245,7 @@ if __name__ == '__main__':
     #Train the model
     # device = "auto"
     trainer = Trainer(accelerator="auto",
-                      strategy="deepspeed_stage_2_offload",
+                      strategy=args.strategy,
                       devices='auto',
                       num_nodes=args.num_nodes,
                       precision=precision,
