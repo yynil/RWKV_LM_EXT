@@ -183,11 +183,14 @@ if __name__ == '__main__':
 
 
     args.epoch_steps = len(train_dataloader)//args.num_devices
-    collator = partial(pad_and_truncated,max_len=args.max_seq_length)
-    #print loading dev data from dev_data in red
-    print(colorama.Fore.RED + f'loading dev data from {args.dev_data}')
-    dev_ds = read_dataset(args.dev_data)
-    dev_dataloader = DataLoader(dev_ds,batch_size=args.micro_bsz,shuffle=False,pin_memory=True,num_workers=4,collate_fn=collator)
+    if args.dev_data is not None:
+        collator = partial(pad_and_truncated,max_len=args.max_seq_length)
+        #print loading dev data from dev_data in red
+        print(colorama.Fore.RED + f'loading dev data from {args.dev_data}')
+        dev_ds = read_dataset(args.dev_data)
+        dev_dataloader = DataLoader(dev_ds,batch_size=args.micro_bsz,shuffle=False,pin_memory=True,num_workers=4,collate_fn=collator)
+    else:
+        dev_dataloader = None
 
     
     w = load_ckpt_and_parse_args(args.model_file,args)
