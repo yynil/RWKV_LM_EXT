@@ -29,8 +29,6 @@ class MyBatchSampler:
         self.world_size = 1
         self.rank = 0
         self.all_batches = sum([(self.cummulative_sizes[i]-(self.cummulative_sizes[i-1] if i > 0 else 0))//(self.variable_batch_sizes[i]*self.world_size) for i in range(len(self.cummulative_sizes))])
-        #log the arguments 
-        print(f"Arguments: {self.__pl_saved_args}")
     @property
     def sampler(self):
         return self._sampler
