@@ -238,12 +238,12 @@ if __name__ == '__main__':
         w = torch.load(args.peft_checkpoint,map_location='cpu')
         infom = embedding_model.load_state_dict(w,strict=False)
         print(colorama.Fore.RED + f'load peft checkpoint from {args.peft_checkpoint} with {infom}'+colorama.Style.RESET_ALL)
-        
+
     print(embedding_model)
 
     #Train the model
-    device = "cuda"
-    trainer = Trainer(accelerator=device,
+    # device = "auto"
+    trainer = Trainer(accelerator=None,
                       strategy="deepspeed_stage_2_offload",
                       devices='auto',
                       num_nodes=args.num_nodes,
