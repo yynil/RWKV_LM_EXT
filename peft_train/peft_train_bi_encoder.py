@@ -143,6 +143,10 @@ def create_arg_parser():
     parser.add_argument('--lora_r',type=int,default=8)
     parser.add_argument('--lora_alpha',type=int,default=32)
     parser.add_argument('--lora_dropout',type=float,default=0.1)
+
+    #add lask peft checkpoint path
+    parser.add_argument('--peft_checkpoint',type=str,help='peft checkpoint path',default=None)
+    parser.add_argument('--skip_steps',type=int,default=0,help='skip steps in the peft checkpoint')
     return parser
 
 def configure_args(args):
@@ -228,6 +232,13 @@ if __name__ == '__main__':
                                                add_mlp=args.add_mlp,
                                                is_in_batch_negative=args.is_in_batch_negative,
                                                output_dim=args.mlp_dim)
+    
+    if args.peft_checkpoint is not None:
+        #load the peft checkpoint
+        w = torch.load(args.peft_checkpoint,map_location='cpu')
+        infom = embedding_model.load_state_dict(w,strict=False)
+        print(colorama.Fore.RED + f'load peft checkpoint from {args.peft_checkpoint} with {infom}'+colorama.Style.RESET_ALL)
+        
     print(embedding_model)
 
     #Train the model
