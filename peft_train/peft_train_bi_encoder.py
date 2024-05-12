@@ -232,7 +232,7 @@ if __name__ == '__main__':
     trainer = Trainer(accelerator=device,
                       strategy="deepspeed_stage_2_offload",
                       devices='auto',
-                      num_nodes=1,
+                      num_nodes=args.num_nodes,
                       precision=precision,
                       logger=False,
                       callbacks=[TrainerCallback(args)],

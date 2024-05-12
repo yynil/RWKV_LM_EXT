@@ -302,12 +302,28 @@ class RWKV_Tmix_x060(MyModule):
         x = self.output(x * g)
         return x
 
-    def forward(self, x,state_xx,state_kv):
+    def forward(self, x,state_xx,state_kv,mask=None,is_bidirectional=False):
+        #mask is [T] with 0s padding
+        if mask is None:
+            #if mask is not provided, assume all valid
+            mask = torch.ones(x.size()[0],device=x.device)
+        #reverse x according mask
+        def reverse_x_idx(mask,max_len):
+            idx_actual_len = torch.sum(mask, dim=0)
+            reverse_idx = torch.cat([torch.arange(0,idx_actual_len).flip(0),torch.arange(idx_actual_len,max_len)],dim=0)
+            return reverse_idx
+        def reverse_x(x, rev_idx):
+            return x.index_select(1, rev_idx)
         T, C = x.size()
         H = self.n_head
         xx = x[-1,:]
         r, k, v, g, w = self.jit_func(x,state_xx)
         x,s = RUN_RWKV_6(1, T, C, H, state_kv.transpose(-1,-2).contiguous(),r, k, v, w, self.time_faaaa)
+        if is_bidirectional:
+            rev_idx = reverse_x_idx(mask,T).to(x.device)
+            rev_x,rev_s = RUN_RWKV_6(1, T, C, H, state_kv.transpose(-1,-2).contiguous(),r, reverse_x(k,rev_idx), reverse_x(v,rev_idx), w, self.time_faaaa)
+            s = s + rev_s
+            x = x + rev_x
         s = s.transpose(-1,-2)
         x = self.jit_func_2(x, g).squeeze(0)
         return x,xx,s
@@ -451,7 +467,7 @@ class Block(nn.Module):
             self.drop0 = nn.Dropout(p = args.dropout)
             self.drop1 = nn.Dropout(p = args.dropout)
         
-    def forward(self, x,state, x_emb=None):
+    def forward(self, x,state, x_emb=None,mask=None,is_bidirectional=False):
         args = self.args
         T, C = x.size()
         if self.layer_id == 0:
@@ -463,7 +479,7 @@ class Block(nn.Module):
         if self.layer_id == 0 and args.pre_ffn > 0:
             x = x + self.ffnPre(self.ln1(x))
         else:
-            x_,x_x,state_kv = self.att(self.ln1(x),state[0],state[1])
+            x_,x_x,state_kv = self.att(self.ln1(x),state[0],state[1],mask=mask,is_bidirectional=is_bidirectional)
             x = x + x_
         x_,state_ffn = self.ffn(self.ln2(x),state[2])
         x = x + x_
@@ -575,7 +591,11 @@ class RWKV(torch.nn.Module):
                 x = self.head(x)
 
             return x[-1,:],state
-        
+
+def create_mask(x):
+    mask = torch.ones(x.size(0)).to(x.device)
+    mask[x == 0] = 0
+    return mask.to(torch.long) 
 
 class RwkvForSequenceEmbedding(torch.nn.Module):
 
@@ -625,19 +645,20 @@ class RwkvForSequenceEmbedding(torch.nn.Module):
                     state[i*3+0] = torch.zeros(args.n_embd, dtype=torch.float, requires_grad=False, device=idx.device).contiguous()
                     state[i*3+1] = torch.zeros((args.n_head, args.n_att//args.n_head, args.n_att//args.n_head), dtype=torch.float, requires_grad=False, device=idx.device).contiguous()
                     state[i*3+2] = torch.zeros(args.n_embd, dtype=torch.float, requires_grad=False, device=idx.device).contiguous()
+            mask = create_mask(idx)
             x = self.rwkvModel.emb(idx)
             x_emb = x
             layer_id = 0
             if args.tiny_att_dim > 0:
                 for block in self.rwkvModel.blocks:
-                    x,x_x,state_kv,state_ffn = block(x,state[layer_id*3:layer_id*3+3], x_emb)
+                    x,x_x,state_kv,state_ffn = block(x,state[layer_id*3:layer_id*3+3], x_emb,mask,True)
                     state[layer_id*3+0] = x_x
                     state[layer_id*3+1] = state_kv
                     state[layer_id*3+2] = state_ffn
                     layer_id += 1
             else:
                 for block in self.rwkvModel.blocks:
-                    x,x_x,state_kv,state_ffn = block(x,state[layer_id*3:layer_id*3+3])
+                    x,x_x,state_kv,state_ffn = block(x,state[layer_id*3:layer_id*3+3],mask=mask,is_bidirectional=True)
                     state[layer_id*3+0] = x_x
                     state[layer_id*3+1] = state_kv
                     state[layer_id*3+2] = state_ffn
@@ -1129,7 +1150,7 @@ def my_print(s):
     gen_cnt += 1
     print(s, end='', flush=True)
 
-if __name__ == '__main__':
+if __name__ == '__main1__':
     torch.backends.cudnn.benchmark = True
     ckpt = '/media/yueyulin/KINGSTON/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
     device = 'cuda'
@@ -1198,9 +1219,9 @@ if __name__ == '__main__':
     print(out)
     out = fusedEncoder.cross_encode_texts(texts[2],texts[3])
     print(out)
-if __name__ == '__main__1':
+if __name__ == '__main__':
     torch.backends.cudnn.benchmark = True
-    ckpt = '/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
+    ckpt = '/media/yueyulin/KINGSTON/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
     device = 'cuda'
     dtype = torch.bfloat16
     args = create_empty_args()
@@ -1231,13 +1252,15 @@ if __name__ == '__main__1':
             output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
         print(output)
 
-    lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/bi-encoder/add_mlp_in_batch_neg/epoch_0_step_200000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
-    bi_encoder = BiEncoder(model,lora_path,tokenizer,dtype=dtype,lora_type='lora',add_mlp=True,mlp_dim=1024,lora_r=8,lora_alpha=32,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],adapter_name='bi_embedding_lora',original_adapter_name='embedding_lora')
+    lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/bi-encoder/en_wiki_256_att_ffn/epoch_0_step_200000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
+    lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/tmp/20240424-225237/trainable_model/epoch_0_step_300000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
+    bi_encoder = BiEncoder(model,lora_path,tokenizer,dtype=dtype,lora_type='lora',add_mlp=True,mlp_dim=1024,lora_r=8,lora_alpha=32,target_modules=['emb','att.key','att.value','att.receptance','ffn.key','ffn.value','ffn.receptance'],adapter_name='bi_embedding_lora',original_adapter_name='embedding_lora')
     print(bi_encoder)
     embeddings = bi_encoder.encode_texts(output)
     print(embeddings)
     print(embeddings.shape)
 
+    texts = ['I\'m good','I\'m OK.','I feel so bad','I think I\'m sick.']
     texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
     outputs = [bi_encoder.encode_texts(text) for text in texts]
 
@@ -1253,41 +1276,41 @@ if __name__ == '__main__1':
         print('-----------------------')
 
    
-    cross_lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/cross-encoder/epoch_0_step_500000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
-    cross_encoder = CrossEncoder(model,cross_lora_path,tokenizer,dtype=dtype,lora_type='lora',lora_r=8,lora_alpha=32,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],adapter_name='cross_encoder_lora',original_adapter_name='embedding_lora',sep_token_id = 2)
-    print(cross_encoder)
-    print(model)
-    out  = cross_encoder.encode_texts(texts[0],texts[1])
-    print(out)
+    # cross_lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/cross-encoder/epoch_0_step_500000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
+    # cross_encoder = CrossEncoder(model,cross_lora_path,tokenizer,dtype=dtype,lora_type='lora',lora_r=8,lora_alpha=32,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],adapter_name='cross_encoder_lora',original_adapter_name='embedding_lora',sep_token_id = 2)
+    # print(cross_encoder)
+    # print(model)
+    # out  = cross_encoder.encode_texts(texts[0],texts[1])
+    # print(out)
 
-    enable_lora(model,enable=False)
-    with torch.no_grad():
-        with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
-            output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
-        print(output)
+    # enable_lora(model,enable=False)
+    # with torch.no_grad():
+    #     with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
+    #         output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
+    #     print(output)
 
-    texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
-    outputs = [bi_encoder.encode_texts(text) for text in texts]
+    # texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
+    # outputs = [bi_encoder.encode_texts(text) for text in texts]
 
 
-    print(outputs)
-    from sentence_transformers.util import pairwise_cos_sim
-    for qid in range(len(texts)):
-        query = outputs[qid]
-        for i in range(len(texts)):
-            if i != qid:
-                print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
+    # print(outputs)
+    # from sentence_transformers.util import pairwise_cos_sim
+    # for qid in range(len(texts)):
+    #     query = outputs[qid]
+    #     for i in range(len(texts)):
+    #         if i != qid:
+    #             print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
 
-        print('-----------------------')
+    #     print('-----------------------')
 
-    enable_lora(model,enable=False)
-    with torch.no_grad():
-        with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
-            output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
-        print(output)
+    # enable_lora(model,enable=False)
+    # with torch.no_grad():
+    #     with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
+    #         output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
+    #     print(output)
 
-    out  = cross_encoder.encode_texts(texts[0],"北京是中华人民共和国不可分割的一部分")
-    print(out)
+    # out  = cross_encoder.encode_texts(texts[0],"北京是中华人民共和国不可分割的一部分")
+    # print(out)
 
-    out = cross_encoder.encode_texts(texts[0],output)
-    print(out)
+    # out = cross_encoder.encode_texts(texts[0],output)
+    # print(out)

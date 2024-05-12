@@ -941,7 +941,7 @@ class RwkvForClassification(pl.LightningModule):
             loss = loss_fct(logits.view(-1, self.num_labels), label.view(-1))
         self.log('train_loss', loss)
         return loss
-
+#TODO: make a RwkvForCharacterClassification class
 
 class RwkvForSequenceEmbedding(pl.LightningModule):
 
