@@ -60,7 +60,14 @@ from functools import partial
 from datasets import Dataset,load_from_disk,concatenate_datasets
 import os
 import sys
-
+"""
+export NCCL_SOCKET_IFNAME=eno1
+export NODE_RANK=0
+export CUDA_HOME=/usr/local/cuda-12.1
+export MASTER_ADDR=192.168.1.41
+export NCCL_SOCKET_FAMILY=IPv4
+export MASTER_PORT=19999
+"""
 from pytorch_lightning import Trainer
 
 parent_parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir))
