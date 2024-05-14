@@ -64,7 +64,7 @@ import sys
 export NCCL_SOCKET_IFNAME=eno1
 export NODE_RANK=0
 export CUDA_HOME=/usr/local/cuda-12.1
-export MASTER_ADDR=192.168.1.41
+export MASTER_ADDR=192.168.1.39
 export NCCL_SOCKET_FAMILY=IPv4
 export MASTER_PORT=19999
 """
@@ -190,7 +190,7 @@ if __name__ == '__main__':
     print(sum_of_batches)
     batch_size = length_of_dataset // sum_of_batches
     print(batch_size)
-    sampler = MyBatchSampler([i for i in range(len(ds))],batch_size,True,ds.cummulative_sizes,args.train_batch_sizes)
+    sampler = MyBatchSampler([i for i in range(len(ds))],batch_size,True,ds.cummulative_sizes,args.train_batch_sizes,skipped_batches=args.skip_steps)
     train_dataloader = DataLoader(ds,batch_sampler=sampler,collate_fn=pad_and_truncated_according_data)
 
 
@@ -251,6 +251,7 @@ if __name__ == '__main__':
 
     #Train the model
     # device = "auto"
+    args.skip_steps = 0
     trainer = Trainer(accelerator="auto",
                       strategy=args.strategy,
                       devices='auto',
