@@ -36,9 +36,9 @@ for i in range(args.n_layer):
     key = f'blocks.{i}.att.time_state'
     print(key)
     value = states[key]
-    prev_x = torch.zeros(args.n_embd,device=device,dtype=torch.float32)#n_embd 2048 
-    prev_states = torch.tensor(value,device=device,dtype=torch.float32)#n_head,head_size,head_size 32,64,64
-    prev_ffn = torch.zeros(args.n_embd,device=device,dtype=torch.float32)#n_embd 2048 
+    prev_x = torch.zeros(args.n_embd,device=device,dtype=torch.float)#n_embd 2048 
+    prev_states = torch.tensor(value,device=device,dtype=torch.float)#n_head,head_size,head_size 32,64,64
+    prev_ffn = torch.zeros(args.n_embd,device=device,dtype=torch.float)#n_embd 2048 
     print(prev_x.shape)
     print(prev_states.shape)
     print(prev_ffn.shape)
@@ -49,13 +49,13 @@ gen_args = PIPELINE_ARGS(temperature = 1.0, top_p = 0.8, top_k = 100, # top_k = 
                         alpha_frequency = 0.25,
                         alpha_presence = 0.25,
                         alpha_decay = 0.996, # gradually decay the penalty
-                        token_ban = [0,1], # ban the generation of some tokens
-                        token_stop = [0,2], # stop generation whenever you see any token here
+                        token_ban = [], # ban the generation of some tokens
+                        token_stop = [0,1], # stop generation whenever you see any token here
                         chunk_len = 256)
 cat_char = '🐱'
 bot_char = '🤖'
-instruction ='曹操送来的木匣妙计中，指示让谁守合淝？可选项：\nA.张辽\nB.李典\nC.乐进\nD.于禁'
-input_text = ''
+instruction ='根据给定的短文，回答以下问题：动物的器官感觉与人的相比有什么不同?'
+input_text = '许多动物的某些器官感觉特别灵敏，它们能比人类提前知道一些灾害事件的发生，例如，海洋中的水母能预报风暴，老鼠能事先躲避矿井崩塌或有害气体，等等。地震往往能使一些动物的某些感觉器官受到刺激而发生异常反应。如一个地区的重力发生变异，某些动物可能通过它们的平衡器官感觉到；一种振动异常，某些动物的听觉器官也许能够察觉出来。地震前地下岩层早已在逐日缓慢活动，而断层面之间又具有强大的摩擦力。这种摩擦力会产生一种低于人的听觉所能感觉到的低频声波。人对每秒20次以上的声波才能感觉到，而动物则不然。那些感觉十分灵敏的动物，在感触到这种低声波时，便会惊恐万状，以至出现冬蛇出洞、鱼跃水面等异常现象。'
 ctx = f'{cat_char}:{instruction}\n{input_text}\n{bot_char}:'
 print(ctx)
 from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
@@ -65,5 +65,5 @@ model = model.to(dtype)
 model = model.to(device)
 with torch.no_grad():
     with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
-        output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=None,state=states_value)
+        output = generate(model, ctx,tokenizer, token_count=128, args=gen_args,callback=None,state=states_value)
     print(output)

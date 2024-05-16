@@ -75,7 +75,7 @@ if __name__ == '__main__':
         labels = torch.tensor(labels)
         return input_ids, labels
     from torch.utils.data import DataLoader
-    train_dataloader = DataLoader(ds,shuffle=False, pin_memory=True, batch_size=4, num_workers=1, persistent_workers=False, drop_last=True, collate_fn=data_collator)
+    train_dataloader = DataLoader(ds,shuffle=False, pin_memory=True, batch_size=1, num_workers=1, persistent_workers=False, drop_last=True, collate_fn=data_collator)
     for i, batch in enumerate(train_dataloader):
         print(i)
         input_ids, labels = batch
@@ -83,9 +83,21 @@ if __name__ == '__main__':
         print(labels)
         print(input_ids.shape)
         print(labels.shape)
-        
-        if i == 0:
+        print('-------------------')
+        if i == 4:
             break
+    tokenizer_file = '/home/yueyulin/github/RWKV_LM_EXT/tokenizer/rwkv_vocab_v20230424.txt'
+    import sys
+    import os
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
+    tokenizer = TRIE_TOKENIZER(tokenizer_file)
+    print(tokenizer.decode([ 3319,   145,   178,    59, 14389, 16771, 16728, 19151, 11405, 12732,
+         10675, 17303, 17389, 14315, 23244, 12642, 10250, 10696, 16136, 11011,
+         11459, 11043, 19134,   261,  3319,   165,   151,    59, 16771, 12221,
+         19151, 10894, 11647]))
+    print(tokenizer.decode([ 16771, 12221, 19151,
+         10894, 11647]))
 if __name__ == '__main__1':
     import argparse
     parser = argparse.ArgumentParser()

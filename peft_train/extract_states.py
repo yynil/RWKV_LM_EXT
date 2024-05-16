@@ -3,7 +3,7 @@ import os
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_filename', type=str,default='/media/yueyulin/data_4t/models/states_tuning/epoch_0_step_1000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth')
+    parser.add_argument('--model_filename', type=str,default='/media/yueyulin/data_4t/models/states_tuning/epoch_0_step_132000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth')
     parser.add_argument('--output_file', type=str,default='/tmp/states.pth')
 
     args = parser.parse_args()
