@@ -143,7 +143,7 @@ def create_arg_parser():
     
     #add peft arguments
     parser.add_argument('--lora_type', type=str, default='lora', help='lora type', choices=['lora','adalora'])
-    parser.add_argument('--target_modules', type=str, nargs='+',default=['ffn.key','ffn.value','ffn.receptance'], help='target modules')
+    parser.add_argument('--target_modules', type=str, nargs='+',default=['emb','ffn.key','ffn.value','ffn.receptance','att.key','att.value','att.receptance'], help='target modules')
     parser.add_argument('--lora_r',type=int,default=8)
     parser.add_argument('--lora_alpha',type=int,default=32)
     parser.add_argument('--lora_dropout',type=float,default=0.1)
