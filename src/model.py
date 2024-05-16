@@ -1,6 +1,8 @@
 ########################################################################################################
 # The RWKV Language Model - https://github.com/BlinkDL/RWKV-LM
 ########################################################################################################
+import functools
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 import os, math, gc, importlib
 import torch
@@ -14,8 +16,107 @@ from pytorch_lightning.strategies import DeepSpeedStrategy
 if importlib.util.find_spec('deepspeed'):
     import deepspeed
     from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
+from torch._lowrank import svd_lowrank
+import bitsandbytes as bnb
 
-# from deepspeed.runtime.fp16.onebit.zoadam import ZeroOneAdam
+LORA_CONFIG = {
+    "r": 0,
+    "alpha": 0,
+    "dropout": 0,
+    "parts": {"att", "ln", "time", "ffn"},
+}
+class LoraLinear(nn.Module):
+
+    def __init__(self, in_features: int, out_features: int, bias: bool):
+        super().__init__()
+
+        self.weight = nn.Parameter(torch.empty((out_features, in_features)))
+        assert bias == False, "Biased LoraLinear not supported"
+
+        r, alpha, dropout = LORA_CONFIG["r"], LORA_CONFIG[
+            "alpha"], LORA_CONFIG["dropout"]
+        self.lora_A = nn.Parameter(torch.empty(r, in_features))
+        self.lora_B = nn.Parameter(torch.empty(out_features, r))
+        self.lora_dropout = nn.Dropout(dropout)
+        self.scaling = alpha / r
+        self.r = r
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_B)
+        self.pissa = False
+        self.is_quant = False
+
+    def pissa_init(self, svd_niter):
+
+        self.pissa = True
+        Ur, Sr, Vr = svd_lowrank(self.weight.data, self.r, niter=svd_niter)
+        Vhr = Vr.t()
+        lora_A = torch.diag(torch.sqrt(Sr)) @ Vhr
+        lora_B = Ur @ torch.diag(torch.sqrt(Sr))
+        self.lora_A.data = lora_A
+        self.lora_B.data = lora_B
+        self.weight.data = self.weight.data - lora_B @ lora_A
+    def quant(self, quant_type):
+        self.is_quant = True
+        self.quant_type = quant_type
+        if self.quant_type=='4bit':
+            self.weight.data, self.qstate= bnb.functional.quantize_4bit((self.weight.data).to('cuda'))
+        elif self.quant_type=='nf4':
+            self.weight.data, self.qstate= bnb.functional.quantize_nf4((self.weight.data).to('cuda'))
+        elif self.quant_type=='fp4':
+            self.weight.data, self.qstate= bnb.functional.quantize_fp4((self.weight.data).to('cuda'))
+
+    def forward(self, x):
+
+        if self.is_quant:
+            if self.quant_type=='4bit':
+                if self.pissa:
+                    return (
+                        F.linear(x, bnb.functional.dequantize_4bit(self.weight.data,quant_state=self.qstate).to(torch.bfloat16)) + 
+                        F.linear(F.linear(x, self.lora_A), self.lora_B))
+                return (
+                    F.linear(x, bnb.functional.dequantize_4bit(self.weight.data,quant_state=self.qstate).to(torch.bfloat16)) + self.scaling *
+                    F.linear(F.linear(self.lora_dropout(x), self.lora_A), self.lora_B)) 
+            elif self.quant_type=='nf4':
+                if self.pissa:
+                    return (
+                        F.linear(x, bnb.functional.dequantize_nf4(self.weight.data,quant_state=self.qstate).to(torch.bfloat16)) + 
+                        F.linear(F.linear(x, self.lora_A), self.lora_B))
+                return (
+                    F.linear(x, bnb.functional.dequantize_nf4(self.weight.data,quant_state=self.qstate).to(torch.bfloat16)) + self.scaling *
+                    F.linear(F.linear(self.lora_dropout(x), self.lora_A), self.lora_B)) 
+            elif self.quant_type=='fp4':
+                if self.pissa:
+                    return (
+                        F.linear(x, bnb.functional.dequantize_fp4(self.weight.data,quant_state=self.qstate).to(torch.bfloat16)) + 
+                        F.linear(F.linear(x, self.lora_A), self.lora_B))
+                return (
+                    F.linear(x, bnb.functional.dequantize_fp4(self.weight.data,quant_state=self.qstate).to(torch.bfloat16)) + self.scaling *
+                    F.linear(F.linear(self.lora_dropout(x), self.lora_A), self.lora_B))  
+
+        if self.pissa:
+            return (
+                F.linear(x, self.weight) + 
+                F.linear(F.linear(x, self.lora_A), self.lora_B))
+        return (
+            F.linear(x, self.weight) + self.scaling *
+            F.linear(F.linear(self.lora_dropout(x), self.lora_A), self.lora_B))  
+
+
+@functools.wraps(LoraLinear)
+def make_linear_att(*args, **kwargs):
+    if "att" in LORA_CONFIG["parts"] and LORA_CONFIG["r"] > 0:
+        return LoraLinear(*args, **kwargs)
+    else:
+        return nn.Linear(*args, **kwargs)
+
+
+@functools.wraps(LoraLinear)
+def make_linear_ffn(*args, **kwargs):
+    if "ffn" in LORA_CONFIG["parts"] and LORA_CONFIG["r"] > 0:
+        return LoraLinear(*args, **kwargs)
+    else:
+        return nn.Linear(*args, **kwargs)
 
 try:
     print('RWKV_MY_TESTING', os.environ["RWKV_MY_TESTING"])
@@ -42,56 +143,109 @@ from torch.utils.cpp_extension import load
 HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE_A"])
 
 if 'x060' in os.environ["RWKV_MY_TESTING"]:
-    parent_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-    wkv6_cuda = load(name="wkv6", sources=[f"{parent_dir}/cuda/wkv6_op.cpp", f"{parent_dir}/cuda/wkv6_cuda.cu"],
-                    verbose=True, extra_cuda_cflags=["-res-usage", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization", f"-D_N_={HEAD_SIZE}", f"-D_T_={int(os.environ['RWKV_CTXLEN'])}"])
-        
-    class WKV_6(torch.autograd.Function):
-        @staticmethod
-        def forward(ctx, B, T, C, H, r, k, v, w, u):
-            with torch.no_grad():
-                assert r.dtype == torch.bfloat16
-                assert k.dtype == torch.bfloat16
-                assert v.dtype == torch.bfloat16
-                assert w.dtype == torch.bfloat16
-                assert u.dtype == torch.bfloat16
-                assert HEAD_SIZE == C // H
-                ctx.B = B
-                ctx.T = T
-                ctx.C = C
-                ctx.H = H
-                assert r.is_contiguous()
-                assert k.is_contiguous()
-                assert v.is_contiguous()
-                assert w.is_contiguous()
-                assert u.is_contiguous()
-                ew = (-torch.exp(w.float())).contiguous()
-                ctx.save_for_backward(r, k, v, ew, u)
-                y = torch.empty((B, T, C), device=r.device, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
-                wkv6_cuda.forward(B, T, C, H, r, k, v, ew, u, y)
-                return y
+    if os.environ["RWKV_TRAIN_TYPE"] == 'states':
+        wkv6state_cuda = load(name="wkv6state", sources=["cuda/wkv6state_op.cpp", f"cuda/wkv6state_cuda.cu"],
+                        verbose=True, extra_cuda_cflags=["-res-usage", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization", f"-D_N_={HEAD_SIZE}", f"-D_T_={int(os.environ['RWKV_CTXLEN'])}"])
+            
+        class WKV_6STATE(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, B, T, C, H, r, k, v, w, u, s):
+                with torch.no_grad():
+                    assert r.dtype == torch.bfloat16
+                    assert k.dtype == torch.bfloat16
+                    assert v.dtype == torch.bfloat16
+                    assert w.dtype == torch.bfloat16
+                    assert u.dtype == torch.bfloat16
+                    assert s.dtype == torch.bfloat16
+                    assert HEAD_SIZE == C // H
+                    ctx.B = B
+                    ctx.T = T
+                    ctx.C = C
+                    ctx.H = H
+                    assert r.is_contiguous()
+                    assert k.is_contiguous()
+                    assert v.is_contiguous()
+                    assert w.is_contiguous()
+                    assert u.is_contiguous()
+                    assert s.is_contiguous()
+                    ctx.save_for_backward(r, k, v, w, u, s)
+                    y = torch.empty((B, T, C), device=r.device, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+                    wkv6state_cuda.forward(B, T, C, H, r, k, v, w, u, s, y)
+                    return y
 
-        @staticmethod
-        def backward(ctx, gy):
-            with torch.no_grad():
-                assert gy.dtype == torch.bfloat16
-                B = ctx.B
-                T = ctx.T
-                C = ctx.C
-                H = ctx.H
-                assert gy.is_contiguous()
-                r, k, v, ew, u = ctx.saved_tensors
-                gr = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
-                gk = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
-                gv = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
-                gw = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
-                gu = torch.empty((B, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
-                wkv6_cuda.backward(B, T, C, H, r, k, v, ew, u, gy, gr, gk, gv, gw, gu)
-                gu = torch.sum(gu, 0).view(H, C//H)
-                return (None, None, None, None, gr, gk, gv, gw, gu)
+            @staticmethod
+            def backward(ctx, gy):
+                with torch.no_grad():
+                    assert gy.dtype == torch.bfloat16
+                    B = ctx.B
+                    T = ctx.T
+                    C = ctx.C
+                    H = ctx.H
+                    assert gy.is_contiguous()
+                    r, k, v, w, u, s = ctx.saved_tensors
+                    gr = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+                    gk = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+                    gv = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+                    gw = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+                    gu = torch.empty((B, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+                    gs = torch.empty((B, H, C//H, C//H), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+                    wkv6state_cuda.backward(B, T, C, H, r, k, v, w, u, s, gy, gr, gk, gv, gw, gu, gs)
+                    gu = torch.sum(gu, 0).view(H, C//H)
+                    gs = torch.sum(gs, 0).view(H, C//H, C//H)
+                    return (None, None, None, None, gr, gk, gv, gw, gu, gs)
 
-    def RUN_CUDA_RWKV6(B, T, C, H, r, k, v, w, u):
-        return WKV_6.apply(B, T, C, H, r, k, v, w, u)
+        def RUN_CUDA_RWKV6_STATE(B, T, C, H, r, k, v, w, u, s):
+            return WKV_6STATE.apply(B, T, C, H, r, k, v, w, u, s)
+    else:
+        wkv6_cuda = load(name="wkv6", sources=["cuda/wkv6_op.cpp", f"cuda/wkv6_cuda.cu"],
+                        verbose=True, extra_cuda_cflags=["-res-usage", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization", f"-D_N_={HEAD_SIZE}", f"-D_T_={int(os.environ['RWKV_CTXLEN'])}"])
+            
+        class WKV_6(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, B, T, C, H, r, k, v, w, u):
+                with torch.no_grad():
+                    assert r.dtype == torch.bfloat16
+                    assert k.dtype == torch.bfloat16
+                    assert v.dtype == torch.bfloat16
+                    assert w.dtype == torch.bfloat16
+                    assert u.dtype == torch.bfloat16
+                    assert HEAD_SIZE == C // H
+                    ctx.B = B
+                    ctx.T = T
+                    ctx.C = C
+                    ctx.H = H
+                    assert r.is_contiguous()
+                    assert k.is_contiguous()
+                    assert v.is_contiguous()
+                    assert w.is_contiguous()
+                    assert u.is_contiguous()
+                    ew = (-torch.exp(w.float())).contiguous()
+                    ctx.save_for_backward(r, k, v, ew, u)
+                    y = torch.empty((B, T, C), device=r.device, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+                    wkv6_cuda.forward(B, T, C, H, r, k, v, ew, u, y)
+                    return y
+
+            @staticmethod
+            def backward(ctx, gy):
+                with torch.no_grad():
+                    assert gy.dtype == torch.bfloat16
+                    B = ctx.B
+                    T = ctx.T
+                    C = ctx.C
+                    H = ctx.H
+                    assert gy.is_contiguous()
+                    r, k, v, ew, u = ctx.saved_tensors
+                    gr = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+                    gk = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+                    gv = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+                    gw = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+                    gu = torch.empty((B, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+                    wkv6_cuda.backward(B, T, C, H, r, k, v, ew, u, gy, gr, gk, gv, gw, gu)
+                    gu = torch.sum(gu, 0).view(H, C//H)
+                    return (None, None, None, None, gr, gk, gv, gw, gu)
+
+        def RUN_CUDA_RWKV6(B, T, C, H, r, k, v, w, u):
+            return WKV_6.apply(B, T, C, H, r, k, v, w, u)
 else:
     wkv5_cuda = load(name="wkv5", sources=["cuda/wkv5_op.cpp", f"cuda/wkv5_cuda.cu"],
                     verbose=True, extra_cuda_cflags=["-res-usage", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization", f"-D_N_={HEAD_SIZE}"])
@@ -187,12 +341,12 @@ class RWKV_TimeMix_RWKV5(MyModule):
             self.time_faaaa = nn.Parameter(tmp.reshape(self.n_head, self.head_size))
 
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
-        self.receptance = nn.Linear(args.n_embd, args.dim_att, bias=False)
-        self.key = nn.Linear(args.n_embd, args.dim_att, bias=False)
+        self.receptance = make_linear_att(args.n_embd, args.dim_att, bias=False)
+        self.key = make_linear_att(args.n_embd, args.dim_att, bias=False)
+        self.value = make_linear_att(args.n_embd, args.dim_att, bias=False)
 
-        self.value = nn.Linear(args.n_embd, args.dim_att, bias=False)
-        self.output = nn.Linear(args.dim_att, args.n_embd, bias=False)
-        self.gate = nn.Linear(args.n_embd, args.dim_att, bias=False)
+        self.output = make_linear_att(args.dim_att, args.n_embd, bias=False)
+        self.gate = make_linear_att(args.n_embd, args.dim_att, bias=False)
         self.ln_x = nn.GroupNorm(self.n_head, args.dim_att)
 
     @MyFunction
@@ -257,6 +411,8 @@ class RWKV_Tmix_x060(MyModule):
             self.time_maa_g = nn.Parameter(1.0 - torch.pow(ddd, 0.5 * ratio_1_to_almost0))
 
             TIME_MIX_EXTRA_DIM = 32 # generate TIME_MIX for w,k,v,r,g
+            if args.n_embd==4096:
+                TIME_MIX_EXTRA_DIM = TIME_MIX_EXTRA_DIM*2
             self.time_maa_w1 = nn.Parameter(torch.zeros(args.n_embd, TIME_MIX_EXTRA_DIM*5).uniform_(-1e-4, 1e-4))
             self.time_maa_w2 = nn.Parameter(torch.zeros(5, TIME_MIX_EXTRA_DIM, args.n_embd).uniform_(-1e-4, 1e-4))
 
@@ -267,6 +423,8 @@ class RWKV_Tmix_x060(MyModule):
             self.time_decay = nn.Parameter(decay_speed.reshape(1,1,args.dim_att))
 
             TIME_DECAY_EXTRA_DIM = 64
+            if args.n_embd==4096:
+                TIME_DECAY_EXTRA_DIM = TIME_DECAY_EXTRA_DIM*2
             self.time_decay_w1 = nn.Parameter(torch.zeros(args.n_embd, TIME_DECAY_EXTRA_DIM).uniform_(-1e-4, 1e-4))
             self.time_decay_w2 = nn.Parameter(torch.zeros(TIME_DECAY_EXTRA_DIM, args.dim_att).uniform_(-1e-4, 1e-4))
 
@@ -276,6 +434,112 @@ class RWKV_Tmix_x060(MyModule):
                 tmp[n] = ratio_0_to_1 * (1 - (n / (args.dim_att - 1))) + zigzag
 
             self.time_faaaa = nn.Parameter(tmp.reshape(self.n_head, self.head_size))
+
+        self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
+        self.receptance = make_linear_att(args.n_embd, args.dim_att, bias=False)
+        self.key = make_linear_att(args.n_embd, args.dim_att, bias=False)
+        self.value = make_linear_att(args.n_embd, args.dim_att, bias=False)
+        self.output = make_linear_att(args.dim_att, args.n_embd, bias=False)
+        self.gate = make_linear_att(args.n_embd, args.dim_att, bias=False)
+        self.ln_x = nn.GroupNorm(self.n_head, args.dim_att, eps=(1e-5)*(args.head_size_divisor**2))
+
+    @MyFunction
+    def jit_func(self, x):
+        B, T, C = x.size()
+
+        xx = self.time_shift(x) - x
+
+        xxx = x + xx * self.time_maa_x
+        xxx = torch.tanh(xxx @ self.time_maa_w1).view(B*T, 5, -1).transpose(0, 1)
+        xxx = torch.bmm(xxx, self.time_maa_w2).view(5, B, T, -1)
+        mw, mk, mv, mr, mg = xxx.unbind(dim=0)
+
+        xw = x + xx * (self.time_maa_w + mw)
+        xk = x + xx * (self.time_maa_k + mk)
+        xv = x + xx * (self.time_maa_v + mv)
+        xr = x + xx * (self.time_maa_r + mr)
+        xg = x + xx * (self.time_maa_g + mg)
+
+        r = self.receptance(xr)
+        k = self.key(xk)
+        v = self.value(xv)
+        g = F.silu(self.gate(xg))
+
+        ww = torch.tanh(xw @ self.time_decay_w1) @ self.time_decay_w2
+        w = self.time_decay + ww
+
+        return r, k, v, g, w
+
+    @MyFunction
+    def jit_func_2(self, x, g):
+        B, T, C = x.size()
+        x = x.view(B * T, C)
+        
+        x = self.ln_x(x).view(B, T, C)
+        x = self.output(x * g)
+        return x
+
+    def forward(self, x):
+        B, T, C = x.size()
+        H = self.n_head
+
+        r, k, v, g, w = self.jit_func(x)
+        x = RUN_CUDA_RWKV6(B, T, C, H, r, k, v, w, u=self.time_faaaa)
+
+        return self.jit_func_2(x, g)
+
+########################################################################################################
+
+class RWKV_Tmix_x060_state(MyModule):
+    def __init__(self, args, layer_id):
+        super().__init__()
+        self.args = args
+        self.layer_id = layer_id
+
+        self.head_size = args.head_size_a
+        self.n_head = args.dim_att // self.head_size
+        assert args.dim_att % self.n_head == 0
+
+        with torch.no_grad():
+            ratio_0_to_1 = layer_id / (args.n_layer - 1)  # 0 to 1
+            ratio_1_to_almost0 = 1.0 - (layer_id / args.n_layer)  # 1 to ~0
+            ddd = torch.ones(1, 1, args.n_embd)
+            for i in range(args.n_embd):
+                ddd[0, 0, i] = i / args.n_embd
+
+            # fancy time_mix
+            self.time_maa_x = nn.Parameter(1.0 - torch.pow(ddd, ratio_1_to_almost0))
+            self.time_maa_w = nn.Parameter(1.0 - torch.pow(ddd, ratio_1_to_almost0))
+            self.time_maa_k = nn.Parameter(1.0 - torch.pow(ddd, ratio_1_to_almost0))
+            self.time_maa_v = nn.Parameter(1.0 - (torch.pow(ddd, ratio_1_to_almost0) + 0.3 * ratio_0_to_1))
+            self.time_maa_r = nn.Parameter(1.0 - torch.pow(ddd, 0.5 * ratio_1_to_almost0))
+            self.time_maa_g = nn.Parameter(1.0 - torch.pow(ddd, 0.5 * ratio_1_to_almost0))
+
+            D_MIX_LORA = 32 # generate TIME_MIX for w,k,v,r,g
+            if args.n_embd==4096:
+                D_MIX_LORA = D_MIX_LORA*2
+            self.time_maa_w1 = nn.Parameter(torch.zeros(args.n_embd, D_MIX_LORA*5))
+            self.time_maa_w2 = nn.Parameter(torch.zeros(5, D_MIX_LORA, args.n_embd).uniform_(-0.01, 0.01))
+
+            # fancy time_decay
+            decay_speed = torch.ones(args.dim_att)
+            for n in range(args.dim_att):
+                decay_speed[n] = -6 + 5 * (n / (args.dim_att - 1)) ** (0.7 + 1.3 * ratio_0_to_1)
+            self.time_decay = nn.Parameter(decay_speed.reshape(1,1,args.dim_att))
+
+            D_DECAY_LORA = 64
+            if args.n_embd==4096:
+                D_DECAY_LORA = D_DECAY_LORA*2
+            self.time_decay_w1 = nn.Parameter(torch.zeros(args.n_embd, D_DECAY_LORA))
+            self.time_decay_w2 = nn.Parameter(torch.zeros(D_DECAY_LORA, args.dim_att).uniform_(-0.01, 0.01))
+
+            tmp = torch.zeros(args.dim_att)
+            for n in range(args.dim_att):
+                zigzag = ((n + 1) % 3 - 1) * 0.1
+                tmp[n] = ratio_0_to_1 * (1 - (n / (args.dim_att - 1))) + zigzag
+
+            self.time_faaaa = nn.Parameter(tmp.reshape(self.n_head, self.head_size))
+            self.time_state = nn.Parameter(torch.zeros(self.n_head, self.head_size, self.head_size))
 
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
         self.receptance = nn.Linear(args.n_embd, args.dim_att, bias=False)
@@ -327,10 +591,9 @@ class RWKV_Tmix_x060(MyModule):
         H = self.n_head
 
         r, k, v, g, w = self.jit_func(x)
-        x = RUN_CUDA_RWKV6(B, T, C, H, r, k, v, w, u=self.time_faaaa)
+        x = RUN_CUDA_RWKV6_STATE(B, T, C, H, r, k, v, w, u=self.time_faaaa, s=self.time_state)
 
         return self.jit_func_2(x, g)
-
 ########################################################################################################
 
 class RWKV_ChannelMix(MyModule):
@@ -348,9 +611,9 @@ class RWKV_ChannelMix(MyModule):
             self.time_mix_k = nn.Parameter(torch.pow(ddd, ratio_1_to_almost0))
             self.time_mix_r = nn.Parameter(torch.pow(ddd, ratio_1_to_almost0))
         
-        self.key = nn.Linear(args.n_embd, args.dim_ffn, bias=False)
-        self.receptance = nn.Linear(args.n_embd, args.n_embd, bias=False)
-        self.value = nn.Linear(args.dim_ffn, args.n_embd, bias=False)
+        self.key = make_linear_ffn(args.n_embd, args.dim_ffn, bias=False)
+        self.receptance = make_linear_ffn(args.n_embd, args.n_embd, bias=False)
+        self.value = make_linear_ffn(args.dim_ffn, args.n_embd, bias=False)
 
     @MyFunction
     def forward(self, x):
@@ -377,9 +640,9 @@ class RWKV_CMix_x060(MyModule):
             self.time_maa_k = nn.Parameter(1.0 - torch.pow(ddd, ratio_1_to_almost0))
             self.time_maa_r = nn.Parameter(1.0 - torch.pow(ddd, ratio_1_to_almost0))
 
-        self.key = nn.Linear(args.n_embd, args.dim_ffn, bias=False)
-        self.receptance = nn.Linear(args.n_embd, args.n_embd, bias=False)
-        self.value = nn.Linear(args.dim_ffn, args.n_embd, bias=False)
+        self.key = make_linear_ffn(args.n_embd, args.dim_ffn, bias=False)
+        self.receptance = make_linear_ffn(args.n_embd, args.n_embd, bias=False)
+        self.value = make_linear_ffn(args.dim_ffn, args.n_embd, bias=False)
 
     @MyFunction
     def forward(self, x):
@@ -447,7 +710,10 @@ class Block(nn.Module):
             self.ffnPre = RWKV_ChannelMix(args, 0)
         else:
             if 'x060' in os.environ["RWKV_MY_TESTING"]:
-                self.att = RWKV_Tmix_x060(args, layer_id)
+                if os.environ["RWKV_TRAIN_TYPE"] == 'states':
+                    self.att = RWKV_Tmix_x060_state(args, layer_id)
+                else:
+                    self.att = RWKV_Tmix_x060(args, layer_id)
             else:
                 self.att = RWKV_TimeMix_RWKV5(args, layer_id)
 
@@ -557,6 +823,8 @@ class RWKV(pl.LightningModule):
         lr_2x = set()
         lr_3x = set()
         for n, p in self.named_parameters():
+            if not p.requires_grad:
+                continue
             if (("_w1" in n) or ("_w2" in n)) and (args.layerwise_lr > 0):
                 lr_1x.add(n)
             elif (("time_mix" in n) or ("time_maa" in n)) and (args.layerwise_lr > 0):
@@ -585,10 +853,10 @@ class RWKV(pl.LightningModule):
         lr_1x = sorted(list(lr_1x))
         lr_2x = sorted(list(lr_2x))
         lr_3x = sorted(list(lr_3x))
-        # print('decay', lr_decay)
-        # print('1x', lr_1x)
-        # print('2x', lr_2x)
-        # print('3x', lr_3x)
+        print('decay', lr_decay)
+        print('1x', lr_1x)
+        print('2x', lr_2x)
+        print('3x', lr_3x)
         param_dict = {n: p for n, p in self.named_parameters()}
         
         if args.layerwise_lr > 0:
@@ -639,13 +907,19 @@ class RWKV(pl.LightningModule):
         if args.tiny_att_dim > 0:
             for block in self.blocks:
                 if args.grad_cp == 1:
-                    x = deepspeed.checkpointing.checkpoint(block, x, x_emb)
+                    if args.lora or args.state_tune:
+                        x = torch_checkpoint(block, x, x_emb, use_reentrant=False)
+                    else:
+                        x = deepspeed.checkpointing.checkpoint(block, x, x_emb)
                 else:
                     x = block(x, x_emb)
         else:
             for block in self.blocks:
                 if args.grad_cp == 1:
-                    x = deepspeed.checkpointing.checkpoint(block, x)
+                    if args.lora or args.state_tune:
+                        x = torch_checkpoint(block, x, x_emb ,use_reentrant=False)
+                    else:
+                        x = deepspeed.checkpointing.checkpoint(block, x)
                 else:
                     x = block(x)
 

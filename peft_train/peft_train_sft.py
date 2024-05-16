@@ -81,7 +81,6 @@ os.environ['RWKV_HEAD_SIZE_A'] = '64'
 os.environ['RWKV_T_MAX'] = '4096'
 os.environ["RWKV_MY_TESTING"]='x060'
 os.environ['RWKV_CTXLEN'] = '4096'
-os.environ["RWKV_TRAIN_TYPE"] = 'states'
 
 from peft_train.Callbacks import TrainerCallback
 from src.model import RWKV
@@ -141,6 +140,18 @@ def create_arg_parser():
     parser.add_argument('--my_qa_mask', type=int, default=0)
 
     parser.add_argument('--train_type', type=str, default='states', help='train type')
+    
+    #add peft arguments
+    parser.add_argument('--lora_type', type=str, default='lora', help='lora type', choices=['lora','adalora'])
+    parser.add_argument('--target_modules', type=str, nargs='+',default=['ffn.key','ffn.value','ffn.receptance'], help='target modules')
+    parser.add_argument('--lora_r',type=int,default=8)
+    parser.add_argument('--lora_alpha',type=int,default=32)
+    parser.add_argument('--lora_dropout',type=float,default=0.1)
+
+    #add lask peft checkpoint path
+    parser.add_argument('--peft_checkpoint',type=str,help='peft checkpoint path',default=None)
+    parser.add_argument('--skip_steps',type=int,default=0,help='skip steps in the peft checkpoint')
+
     return parser
 
 def configure_args(args):
@@ -148,7 +159,7 @@ def configure_args(args):
     args.real_bsz = args.micro_bsz * args.accumulate_grad_batches*args.num_devices
     args.my_timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     if args.proj_dir is None:
-        args.proj_dir = f'args.output_dir/{args.my_timestamp}'
+        args.proj_dir = f'{args.output_dir}/{args.my_timestamp}'
     args.wandb = f'{args.wandb}-{args.my_timestamp}'
     args.run_name = f'{args.run_name}-{args.my_timestamp}'
 
@@ -196,6 +207,34 @@ if __name__ == '__main__':
     print(model)
     inform = model.load_state_dict(w,strict=False)
     print(inform)
+
+    if args.train_type == 'lora':
+        #Configure the peft configuration to inject 
+        lora_config = None
+        if args.lora_type == 'lora':
+            from peft import LoraConfig
+            lora_config = LoraConfig(r=args.lora_r,lora_alpha=args.lora_alpha,target_modules=args.target_modules,lora_dropout=args.lora_dropout)
+        elif args.lora_type == 'adalora':
+            from peft import AdaLoraConfig
+            lora_config = AdaLoraConfig(r=args.lora_r,lora_alpha=args.lora_alpha,target_modules=args.target_modules,lora_dropout=args.lora_dropout)
+
+        #Inject the lora configuration to the model
+        from peft import inject_adapter_in_model
+        model = inject_adapter_in_model(lora_config,model,adapter_name='sft_lora')
+        print(model)
+        def print_trainable_params(model):
+            #count whole model parameters and print trainable parameters' count and percentage
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            print(colorama.Fore.GREEN + f'total params: {total_params}, trainable params: {trainable_params}, trainable params percentage: {trainable_params/total_params*100:.2f}%')
+        print_trainable_params(model)
+    elif args.train_type == 'states':
+        for name, param in model.named_parameters():
+            if 'state' in name :
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+
 
 
     #Train the model
