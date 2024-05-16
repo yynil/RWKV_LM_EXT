@@ -92,6 +92,8 @@ def create_arg_parser():
     import argparse
     parser = argparse.ArgumentParser(description='peft train BiEncoder')
     parser.add_argument('--train_data', type=str,help='parquet dicrectory containing the training data')
+    parser.add_argument('--train_lengths',type=int,nargs='+',default=[64,128,256,512,1024,2048],help='length of the training data')
+    parser.add_argument('--train_batch_sizes', type=int,nargs='+', default=[64,32,16,8,4,2], help='batch size to train the model')
     parser.add_argument('--model_file', type=str,default='/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth', help='model to be trained,now rwkv5 and rwkv6 are supported')
     parser.add_argument('--output_dir', type=str, default='/media/yueyulin/bigdata/tmp',help='directory to save the trained model')
     parser.add_argument('--num_epochs', type=int, default=150, help='number of epochs to train the model')
@@ -181,20 +183,30 @@ if __name__ == '__main__':
     #print loading data from train_data in red
     import colorama
     print(colorama.Fore.RED + f'loading data from {args.train_data}')
-    data_path_list = []
-    for data_path in os.listdir(args.train_data):
-        if data_path.endswith('_dataset'):
-            data_path_list.append(os.path.join(args.train_data,data_path))
-    ds = read_dataset(data_path_list)
-    print(ds)
-    def data_collator(batch):
-        input_ids = [b['input_ids'] for b in batch]
-        labels = [b['labels'] for b in batch]
-        input_ids = torch.tensor(input_ids)
-        labels = torch.tensor(labels)
-        return input_ids, labels
-    train_dataloader = DataLoader(ds,shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True,collate_fn=data_collator)
-    print(train_dataloader)
+    # data_path_list = []
+    # for data_path in os.listdir(args.train_data):
+    #     if data_path.endswith('_dataset'):
+    #         data_path_list.append(os.path.join(args.train_data,data_path))
+    # ds = read_dataset(data_path_list)
+    # print(ds)
+    # def data_collator(batch):
+    #     input_ids = [b['input_ids'] for b in batch]
+    #     labels = [b['labels'] for b in batch]
+    #     input_ids = torch.tensor(input_ids)
+    #     labels = torch.tensor(labels)
+    #     return input_ids, labels
+    # train_dataloader = DataLoader(ds,shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True,collate_fn=data_collator)
+    # print(train_dataloader)
+    from data.custom_datasets import read_dataset as read_variable_length_dataset,pad_only_according_data
+    ds = read_variable_length_dataset(args.train_data,args.train_lengths)
+    length_of_dataset = len(ds)
+    sum_of_batches = sum([(ds.cummulative_sizes[i]-(ds.cummulative_sizes[i-1] if i > 0 else 0))//args.train_lengths[i] for i in range(len(ds.cummulative_sizes))])
+    print(sum_of_batches)
+    batch_size = length_of_dataset // sum_of_batches
+    print(batch_size)
+    sampler = MyBatchSampler([i for i in range(len(ds))],batch_size,True,ds.cummulative_sizes,args.train_batch_sizes,skipped_batches=args.skip_steps)
+    train_dataloader = DataLoader(ds,batch_sampler=sampler,collate_fn=pad_only_according_data)
+
 
     args.epoch_steps = len(train_dataloader)//args.num_devices
     
@@ -260,7 +272,8 @@ if __name__ == '__main__':
     
     print("Current device rank: ", trainer.global_rank)
     print("Total number of devices: ", trainer.world_size)
-
+    sampler.set_world_size(trainer.world_size)
+    sampler.rank = trainer.global_rank
     trainer.fit(model, 
                 train_dataloader,
                 dev_dataloader)

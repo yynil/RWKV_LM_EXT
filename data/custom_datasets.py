@@ -75,7 +75,13 @@ class MyBatchSampler:
 
 import random
 import torch
-
+def pad_only_according_data(features, pad_token_id=0):
+    max_len = features[0]['fixed_len']
+    input_ids = [feature['input_ids'] for feature in features]
+    labels = [feature['labels'] for feature in features]
+    input_ids = [i+[pad_token_id]*(max_len-len(i)) for i in input_ids]
+    labels = [l+[pad_token_id]*(max_len-len(l)) for l in labels]
+    return torch.tensor(input_ids,dtype=torch.long),torch.tensor(labels,dtype=torch.long)
 def pad_and_truncated_according_data(features, pad_token_id=0,eos_token_id=1):
     max_len = features[0]['fixed_len']
     query_ids = [feature['query'] for feature in features]
