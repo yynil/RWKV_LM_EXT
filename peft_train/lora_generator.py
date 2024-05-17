@@ -57,7 +57,6 @@ ctx = f'{cat_char}:{instruction}\n{input_text}\n{bot_char}:'
 print(ctx)
 from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
 tokenizer = TRIE_TOKENIZER(tokenizer_file)
-print(len(tokenizer.encode(ctx)))
 model = model.to(dtype)
 model = model.to(device)
 with torch.no_grad():
