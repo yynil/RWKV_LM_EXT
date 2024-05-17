@@ -246,6 +246,24 @@ if __name__ == '__main__':
                 param.requires_grad = True
             else:
                 param.requires_grad = False
+    elif args.train_type == 'pissa':
+        from peft import LoraConfig
+        lora_config = LoraConfig(
+            # init_lora_weights="pissa", # Configure the initialization method to "pissa", which may take several minutes to execute SVD on the pre-trained model.
+            init_lora_weights="pissa_niter_4", # Initialize the PiSSA with fast SVD, which completes in just a few seconds.
+            target_modules=args.target_modules,lora_dropout=args.lora_dropout
+        )
+        #Inject the lora configuration to the model
+        from peft import inject_adapter_in_model
+        model = inject_adapter_in_model(lora_config,model,adapter_name='sft_lora')
+        print(model)
+        def print_trainable_params(model):
+            #count whole model parameters and print trainable parameters' count and percentage
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            print(colorama.Fore.GREEN + f'total params: {total_params}, trainable params: {trainable_params}, trainable params percentage: {trainable_params/total_params*100:.2f}%')
+        print_trainable_params(model)
+    
 
 
 
