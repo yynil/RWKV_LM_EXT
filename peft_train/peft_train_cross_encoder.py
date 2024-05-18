@@ -1,4 +1,5 @@
-#peft train BiEncoder
+#peft train CrossEncoder
+#python peft_train/peft_train_cross_encoder.py --train_data /home/yueyulin/data/splitted_parquet --train_lengths 128 256 512 --train_batch_sizes 12 6 3 --model_file /home/yueyulin/models/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth --output_dir /home/yueyulin/output/cross_encoder/0518 --num_epochs 1 --num_devices 4 --dropout 0.1 --log_every_n_steps 10000 --num_nodes 3 --proj_dir  /home/yueyulin/output/cross_encoder/0518 --skip_steps 0
 #This script accept the following arguments:
 #  --train_data TRAIN_DATA which is a parquet dicrectory containing the training data
 #  --model MODEL which is the model to be trained,now rwkv5 and rwkv6 are supported
@@ -89,7 +90,7 @@ def create_arg_parser():
     parser.add_argument('--dev_data', type=str,help='parquet dicrectory containing the dev data')
     parser.add_argument('--model_file', type=str,default='/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth', help='model to be trained,now rwkv5 and rwkv6 are supported')
     parser.add_argument('--output_dir', type=str, default='/media/yueyulin/bigdata/tmp',help='directory to save the trained model')
-    parser.add_argument('--num_epochs', type=int, default=150, help='number of epochs to train the model')
+    parser.add_argument('--num_epochs', type=int, default=1, help='number of epochs to train the model')
     parser.add_argument('--max_seq_length', type=int, default=128, help='maximum sequence length to train the model')
     parser.add_argument('--add_mlp', action='store_true', help='flag to add mlp to the model')
     parser.add_argument('--mlp_dim', type=int,default=1024, help='dimension of the mlp')
@@ -132,15 +133,20 @@ def create_arg_parser():
     parser.add_argument('--my_pile_edecay', type=float, default=0, help='pile exponential decay in the model')
     parser.add_argument('--weight_decay_final', type=float, default=-1, help='final weight decay in the model')
     parser.add_argument('--proj_dir', type=str, help='project directory to save the model and logs')
-    parser.add_argument('--wandb', type=str, default='peft', help='wandb project name')
+    parser.add_argument('--wandb', type=str, default='peft_cross_encoder', help='wandb project name')
     parser.add_argument('--run_name', type=str, default='peft_cross_encoder_trainer', help='run name for wandb logging')
+    parser.add_argument('--strategy', type=str, default='deepspeed_stage_2_offload', help='strategy for distributed training', choices=['deepspeed_stage_2_offload','deepspeed_stage_3_offload'])
 
     #add peft arguments
     parser.add_argument('--lora_type', type=str, default='lora', help='lora type', choices=['lora','adalora'])
-    parser.add_argument('--target_modules', type=str, nargs='+',default=['ffn.key','ffn.value','ffn.receptance'], help='target modules')
+    parser.add_argument('--target_modules', type=str, nargs='+',default=['ffn.key','ffn.value','ffn.receptance','att.key','att.value','att.receptance','emb'], help='target modules')
     parser.add_argument('--lora_r',type=int,default=8)
     parser.add_argument('--lora_alpha',type=int,default=32)
     parser.add_argument('--lora_dropout',type=float,default=0.1)
+
+    #add lask peft checkpoint path
+    parser.add_argument('--peft_checkpoint',type=str,help='peft checkpoint path',default=None)
+    parser.add_argument('--skip_steps',type=int,default=0,help='skip steps in the peft checkpoint')
     return parser
 
 def configure_args(args):
@@ -149,7 +155,7 @@ def configure_args(args):
     args.my_timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     if args.proj_dir is None:
         args.proj_dir = f'{args.output_dir}/{args.my_timestamp}'
-    args.wandb = f'{args.wandb}-{args.my_timestamp}'
+    args.wandb = f'{args.wandb}'
     args.run_name = f'{args.run_name}-{args.my_timestamp}'
 
     args.trainable_dir_output = os.path.join(args.proj_dir, "trainable_model")
@@ -181,20 +187,8 @@ if __name__ == '__main__':
 
 
     args.epoch_steps = len(train_dataloader)//args.num_devices
-    collator = partial(pad_and_truncated,max_len=args.max_seq_length)
-    #print loading dev data from dev_data in red
-    print(colorama.Fore.RED + f'loading dev data from {args.dev_data}')
-    dev_ds = read_variable_length_dataset(args.dev_data,args.train_lengths)
-    length_of_dataset = len(dev_ds)
-    sum_of_batches = sum([(dev_ds.cummulative_sizes[i]-(dev_ds.cummulative_sizes[i-1] if i > 0 else 0))//args.train_lengths[i] for i in range(len(dev_ds.cummulative_sizes))])
-    print(sum_of_batches)
-    batch_size = length_of_dataset // sum_of_batches
-    print(batch_size)    
-    dev_sampler = MyBatchSampler([i for i in range(len(dev_ds))],batch_size,True,dev_ds.cummulative_sizes,args.train_batch_sizes)
 
-    dev_dataloader = DataLoader(dev_ds,batch_sampler=dev_sampler,collate_fn=cross_encoder_pad_and_truncated_according_data)
-
-    
+    dev_dataloader = None
     w = load_ckpt_and_parse_args(args.model_file,args)
 
     rwkv_base_model = RWKV(args)
@@ -215,7 +209,7 @@ if __name__ == '__main__':
 
     #Inject the lora configuration to the model
     from peft import inject_adapter_in_model
-    rwkv_base_model = inject_adapter_in_model(lora_config,rwkv_base_model,adapter_name='embedding_lora')
+    rwkv_base_model = inject_adapter_in_model(lora_config,rwkv_base_model,adapter_name='scorer_lora')
     print(rwkv_base_model)
     def print_trainable_params(model):
         #count whole model parameters and print trainable parameters' count and percentage
@@ -226,13 +220,19 @@ if __name__ == '__main__':
 
 
     cross_encoder_model = RwkvForClassification(rwkv_base_model)
+    if args.peft_checkpoint is not None:
+        #load the peft checkpoint
+        w = torch.load(args.peft_checkpoint,map_location='cpu')
+        infom = cross_encoder_model.load_state_dict(w,strict=False)
+        print(colorama.Fore.RED + f'load peft checkpoint from {args.peft_checkpoint} with {infom}'+colorama.Style.RESET_ALL)
+
+    print(cross_encoder_model)
 
     #Train the model
-    device = "cuda"
-    trainer = Trainer(accelerator=device,
-                      strategy="deepspeed_stage_2_offload",
+    trainer = Trainer(accelerator="auto",
+                      strategy=args.strategy,
                       devices='auto',
-                      num_nodes=1,
+                      num_nodes=args.num_nodes,
                       precision=precision,
                       logger=False,
                       callbacks=[TrainerCallback(args)],
@@ -251,9 +251,6 @@ if __name__ == '__main__':
     print("Total number of devices: ", trainer.world_size)
     sampler.set_world_size(trainer.world_size)
     sampler.rank = trainer.global_rank
-    dev_sampler.set_world_size(trainer.world_size)
-    dev_sampler.rank = trainer.global_rank
-    print(cross_encoder_model)
 
     trainer.fit(cross_encoder_model, 
                 train_dataloader,dev_dataloader)

@@ -1,4 +1,5 @@
 #peft train BiEncoder
+#python peft_train/peft_train_bi_encoder.py --train_data /home/yueyulin/data/splitted_parquet --train_lengths 128 256 512 --train_batch_sizes 12 6 3 --model_file /home/yueyulin/models/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth --output_dir /home/yueyulin/output/bi_encoder_lora/0514 --num_epochs 1 --add_mlp --is_in_batch_negative --num_devices 4 --dropout 0.1 --log_every_n_steps 10000 --num_nodes 3 --proj_dir  /home/yueyulin/output/bi_encoder_lora/0514 --run_name peft_bi_multiple_nodes_continual --target_modules emb ffn.key ffn.value ffn.receptance --peft_checkpoint /home/yueyulin/output/bi_encoder_lora/trainable_model/epoch_0_step_120000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth --skip_steps 120000
 #This script accept the following arguments:
 #  --train_data TRAIN_DATA which is a parquet dicrectory containing the training data
 #  --model MODEL which is the model to be trained,now rwkv5 and rwkv6 are supported
@@ -97,7 +98,7 @@ def create_arg_parser():
     parser.add_argument('--dev_data', type=str,nargs='+' ,help='parquet dicrectory containing the dev data')
     parser.add_argument('--model_file', type=str,default='/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth', help='model to be trained,now rwkv5 and rwkv6 are supported')
     parser.add_argument('--output_dir', type=str, default='/media/yueyulin/bigdata/tmp',help='directory to save the trained model')
-    parser.add_argument('--num_epochs', type=int, default=150, help='number of epochs to train the model')
+    parser.add_argument('--num_epochs', type=int, default=1, help='number of epochs to train the model')
     parser.add_argument('--max_seq_length', type=int, default=128, help='maximum sequence length to train the model')
     parser.add_argument('--add_mlp', action='store_true', help='flag to add mlp to the model')
     parser.add_argument('--mlp_dim', type=int,default=1024, help='dimension of the mlp')
@@ -162,8 +163,8 @@ def configure_args(args):
     args.real_bsz = args.micro_bsz * args.accumulate_grad_batches*args.num_devices
     args.my_timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     if args.proj_dir is None:
-        args.proj_dir = f'args.output_dir/{args.my_timestamp}'
-    args.wandb = f'{args.wandb}-{args.my_timestamp}'
+        args.proj_dir = f'{args.output_dir}/{args.my_timestamp}'
+    args.wandb = f'{args.wandb}'
     args.run_name = f'{args.run_name}-{args.my_timestamp}'
 
     args.trainable_dir_output = os.path.join(args.proj_dir, "trainable_model")
@@ -251,7 +252,6 @@ if __name__ == '__main__':
 
     #Train the model
     # device = "auto"
-    args.skip_steps = 0
     trainer = Trainer(accelerator="auto",
                       strategy=args.strategy,
                       devices='auto',
