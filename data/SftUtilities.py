@@ -142,7 +142,7 @@ if __name__ == '__main__r':
          19151, 10894, 11647]))
     print(tokenizer.decode([ 16771, 12221, 19151,
          10894, 11647]))
-if __name__ == '__main__':
+if __name__ == '__main__create_batch':
     parent_dir = '/media/yueyulin/data_4t/data/tigerbot_sft_dataset/'
     sizes = [64,128,256,512,1024,2048]
     from custom_datasets import read_dataset
@@ -170,10 +170,10 @@ if __name__ == '__main__2':
             output_sft = os.path.join(args.output_dir, file.replace('.json', '_dataset_'))
             create_variable_sized_sft_from_jsonl(input_jsonl, output_sft, args.tokenizer_file)
 
-if __name__ == '__main__2':
-    input_jsonl = '/media/yueyulin/data_4t/data/tigerbot_sft/tigerbot-alpaca-zh-0.5m.json'
+if __name__ == '__main__':
+    input_jsonl = '/home/yueyulin/下载/ft-data-conversion_output.jsonl'
     tokenizer_file = '/home/yueyulin/github/RWKV_LM_EXT/tokenizer/rwkv_vocab_v20230424.txt'
-    create_variable_sized_sft_from_jsonl(input_jsonl, '/media/yueyulin/data_4t/data/alphca-zh-0.5m-ds-',tokenizer_file)
+    create_variable_sized_sft_from_jsonl(input_jsonl, '/home/yueyulin/下载/ft-data-conversion-ds_',tokenizer_file)
 
 if __name__ == '__main_test__':
     input_jsonl = '/media/yueyulin/data_4t/data/tigerbot_sft/tigerbot-alpaca-zh-0.5m.json'
