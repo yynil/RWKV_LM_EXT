@@ -1,4 +1,6 @@
-ckpt = '/media/yueyulin/KINGSTON/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
+ckpt = '/media/yueyulin/data_4t/models/rwkv6_1b6_pissaed.pth'
+#ckpt = '/media/yueyulin/KINGSTON/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
+
 states_file = '/media/yueyulin/data_4t/models/states_tuning/states_tuning/20240516-124747/trainable_model/epoch_1_step_225000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
 tokenizer_file = '/home/yueyulin/github/RWKV_LM_EXT/tokenizer/rwkv_vocab_v20230424.txt'
 
@@ -63,6 +65,7 @@ tokenizer = TRIE_TOKENIZER(tokenizer_file)
 
 model = model.to(dtype)
 model = model.to(device)
+states_value = None
 with torch.no_grad():
     with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
         output = generate(model, ctx,tokenizer, token_count=128, args=gen_args,callback=None,state=states_value)

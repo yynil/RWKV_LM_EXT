@@ -219,6 +219,24 @@ if __name__ == '__main__':
    
 
     if args.train_type == 'lora': 
+        args.lora = True
+        args.parts = args.target_modules
+        from src.model import LORA_CONFIG
+        LORA_CONFIG['r'] = args.lora_r
+        LORA_CONFIG['alpha'] = args.lora_alpha
+        LORA_CONFIG['dropout'] = args.lora_dropout
+        LORA_CONFIG['parts'] = args.parts
+        model = RWKV(args)
+        print(model)
+        inform = model.load_state_dict(w,strict=False)
+        print(inform)
+        for name, param in model.named_parameters():
+            if 'lora_' in name :
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+        """
+        Let's use the rwkv's own lora configuration
         model = RWKV(args)
         print(model)
         inform = model.load_state_dict(w,strict=False)
@@ -242,6 +260,7 @@ if __name__ == '__main__':
             trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             print(colorama.Fore.GREEN + f'total params: {total_params}, trainable params: {trainable_params}, trainable params percentage: {trainable_params/total_params*100:.2f}%')
         print_trainable_params(model)
+        """
     elif args.train_type == 'states':
         model = RWKV(args)
         print(model)
