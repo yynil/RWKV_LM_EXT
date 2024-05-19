@@ -1,4 +1,6 @@
 ckpt = '/media/yueyulin/data_4t/models/rwkv6_1b6_pissaed.pth'
+ckpt = '/media/yueyulin/data_4t/models/rwkv6_1b6_loraed.pth'
+
 #ckpt = '/media/yueyulin/KINGSTON/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
 
 states_file = '/media/yueyulin/data_4t/models/states_tuning/states_tuning/20240516-124747/trainable_model/epoch_1_step_225000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'

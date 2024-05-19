@@ -24,6 +24,7 @@ from peft.tuners.lora.layer import LoraLayer
 def __nop(ob):
     return ob
 
+from torch._lowrank import svd_lowrank
 
 MyModule = nn.Module
 MyFunction = __nop
@@ -1161,7 +1162,7 @@ if __name__ == '__main__':
             output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
         print(output)
 
-    bi_lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/bi-encoder/add_mlp_in_batch_neg/epoch_0_step_200000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
+    bi_lora_path = '/media/yueyulin/data_4t/models/lora/biencoder/epoch_1_step_430000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
     cross_lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/cross-encoder/epoch_0_step_500000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
     fusedEncoder = BiCrossFusionEncoder(model,bi_lora_path,cross_lora_path,tokenizer,dtype=dtype,lora_type='lora',lora_r=8,lora_alpha=32,add_mlp=True,mlp_dim=1024,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],cross_adapter_name='cross_encoder_lora',original_cross_adapter_name='embedding_lora',bi_adapter_name='bi_embedding_lora',original_bi_adapter_name='embedding_lora',sep_token_id = 2)
     print(fusedEncoder.bi_encoder)
