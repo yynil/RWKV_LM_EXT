@@ -28,3 +28,19 @@ graph LR
     C --> D[Apply pooling method]
     D --> E(Return embeddings)
 ```
+
+
+## Some lora checkpoints:
+
+AnswerBot SFT: 链接: https://pan.baidu.com/s/1f61FwhinoGqWg-nlAWPnPw?pwd=b4ff 提取码: b4ff 
+--来自百度网盘超级会员v6的分享
+
+This is finetuned by RWKV's lora.
+
+BiEncoder: 链接: https://pan.baidu.com/s/1f61FwhinoGqWg-nlAWPnPw?pwd=b4ff 提取码: b4ff 
+--来自百度网盘超级会员v6的分享
+
+This is finetuned by peft.
+
+
+The usage of these two peft, please refer to src/layers.py main entry. Try python src/layers.py test_both to see the magic!

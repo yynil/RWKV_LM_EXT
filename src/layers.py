@@ -29,7 +29,9 @@ class LoraEmbedding(nn.Module):
         self.lora_B[adapter_name] = nn.Parameter(weight_B)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.active_adapter == "default" or self.active_adapter not in self.adapters:
+        if self.active_adapter == "default" or self.active_adapter not in self.adapters \
+            or self.active_adapter not in self.lora_A \
+                or self.active_adapter not in self.lora_B:
             return self.base_layer(x)
         else:
             result = self.base_layer(x)
@@ -67,7 +69,9 @@ class LoraLinear(nn.Module):
 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.active_adapter == "default" or self.active_adapter not in self.adapters:
+        if self.active_adapter == "default" or self.active_adapter not in self.adapters \
+            or self.active_adapter not in self.lora_A \
+                or self.active_adapter not in self.lora_B:
             return self.base_layer(x)
         else:
             A = self.lora_A[self.active_adapter](x)
@@ -101,7 +105,6 @@ def inject_lora_adapter_with_state_dict(model: torch.nn.Module,
         return False
     for key,sub_module in sub_modules:
         if is_target(key):
-            print('injecting lora adapter to:',key)
             parent_module, target_key = get_parent_target_module(model, key)
             if peft_name is None:
                 lora_A = f'{key}.lora_A'
@@ -140,10 +143,7 @@ def inject_lora_adapter_with_state_dict(model: torch.nn.Module,
                     sub_module.add_adapter(adapter_name,r,alpha)
                     sub_module.lora_A[adapter_name].data = state_dict[lora_A].to(sub_module.lora_A[adapter_name].data.device)
                     sub_module.lora_B[adapter_name].data = state_dict[lora_B].to(sub_module.lora_B[adapter_name].data.device)
-                else:
-                    print(f'Error: {key} is not a nn.Linear or LoraLinear module')
-            else:
-                print(f'Error: {lora_A} or {lora_B} not in state_dict')
+
 def set_adapter(model, adapter_name):
     sub_modules = model.named_modules()
     for key,sub_module in sub_modules:
@@ -164,7 +164,6 @@ def load_base_model():
     model = RWKV(args)
     info = model.load_state_dict(w)
     model.eval()
-    print(model)
     print(info)
     return model
 
@@ -197,13 +196,18 @@ if __name__ == '__main__':
     tokenizer_file = '/home/yueyulin/github/RWKV_LM_EXT/tokenizer/rwkv_vocab_v20230424.txt'
     from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
     tokenizer = TRIE_TOKENIZER(tokenizer_file)
+    should_delete_head = True
     if test_mode == 'test_generate':
         test_lora_generate = True
         test_biencoder = False
     elif test_mode == 'test_biencoder':
         test_lora_generate = False
         test_biencoder = True
-    def test_generate(model,tokenizer):
+    elif test_mode == 'test_both':
+        test_lora_generate = True
+        test_biencoder = True
+        should_delete_head = False
+    def test_generate(model):
         gen_args = PIPELINE_ARGS(temperature = 1.0, top_p = 0.96, top_k = 20, # top_k = 0 then ignore
                         alpha_frequency = 0.25,
                         alpha_presence = 0.25,
@@ -231,10 +235,9 @@ if __name__ == '__main__':
     lora_aplha = 32
     lora_r = 8
     if test_lora_generate:    
-        test_generate(model,tokenizer_file)
+        test_generate(model)
         lora_ckpt = '/media/yueyulin/data_4t/models/lora_rwkv/epoch_7/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
         lora_state_dict = torch.load(lora_ckpt,map_location='cpu')
-        print(lora_state_dict.keys())
         lora_aplha = 32
         lora_r = 8
         targets = {'ffn.key','ffn.value','ffn.receptance','att.key','att.value','att.receptance'}
@@ -245,14 +248,12 @@ if __name__ == '__main__':
                                             lora_aplha,
                                             targets)
         
-        print(model)
         set_adapter(model,"sft_lora")
 
-        test_generate(model,tokenizer_file)
-    elif test_biencoder:
+        test_generate(model)
+    if test_biencoder:
         lora_ckpt = '/media/yueyulin/data_4t/models/lora/biencoder/epoch_1_step_430000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
         lora_state_dict = torch.load(lora_ckpt,map_location='cpu')
-        print(lora_state_dict.keys())
         #replace lora_embedding_A to lora_A, lora_embedding_B to lora_B
         keys = list(lora_state_dict.keys())
         for key in keys:
@@ -263,7 +264,6 @@ if __name__ == '__main__':
                 new_key = key.replace('lora_embedding_B','lora_B')
                 lora_state_dict[new_key] = lora_state_dict.pop(key)
 
-        print(lora_state_dict.keys())
         peft_name = 'embedding_lora'
         parent_model_name = "rwkvModel"
         targets = ['emb','ffn.key','ffn.value','ffn.receptance']
@@ -275,11 +275,9 @@ if __name__ == '__main__':
                                             targets,
                                             peft_name,
                                             parent_model_name)
-        print(model)
         from src.model_run import RwkvForSequenceEmbedding
         add_mlp = 'dense.weight' in lora_state_dict
         output_dim = -1
-        should_delete_head = True
         if add_mlp:
             output_dim = lora_state_dict['dense.weight'].shape[0]
             print(f'add_mlp: {add_mlp},with output_dim: {output_dim}')
@@ -289,7 +287,6 @@ if __name__ == '__main__':
                                                      should_delete_head=should_delete_head)
         rwkv_embedding.dense.weight.data = lora_state_dict['dense.weight'].to(device=device,dtype=dtype)
         rwkv_embedding.dense.bias.data = lora_state_dict['dense.bias'].to(device=device,dtype=dtype)
-        print(rwkv_embedding)
         # rwkv_embedding = rwkv_embedding.to(device=device,dtype=dtype)
         def encode_texts(text,chunk_size=1024):
             input_ids =  tokenizer.encode(text)
@@ -314,6 +311,24 @@ if __name__ == '__main__':
                     print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
 
             print('-----------------------')
+        set_adapter(model,"embedding_lora")
+        outputs = [encode_texts(text) for text in texts]
+        print(outputs)
+        from sentence_transformers.util import pairwise_cos_sim
+        for qid in range(len(texts)):
+            query = outputs[qid]
+            for i in range(len(texts)):
+                if i != qid:
+                    print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
+
+            print('-----------------------')
+
+    if test_lora_generate:
+        set_adapter(model,"sft_lora")
+
+        test_generate(model)
+
+    if test_biencoder:
         set_adapter(model,"embedding_lora")
         outputs = [encode_texts(text) for text in texts]
         print(outputs)
