@@ -182,7 +182,7 @@ if __name__ == '__main__':
     print(sum_of_batches)
     batch_size = length_of_dataset // sum_of_batches
     print(batch_size)
-    sampler = MyBatchSampler([i for i in range(len(ds))],batch_size,True,ds.cummulative_sizes,args.train_batch_sizes)
+    sampler = MyBatchSampler([i for i in range(len(ds))],batch_size,True,ds.cummulative_sizes,args.train_batch_sizes,skipped_batches=args.skip_steps)
     train_dataloader = DataLoader(ds,batch_sampler=sampler,collate_fn=cross_encoder_pad_and_truncated_according_data)
 
 

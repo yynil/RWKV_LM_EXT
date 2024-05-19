@@ -274,7 +274,7 @@ if __name__ == '__main__':
     print("Total number of devices: ", trainer.world_size)
     sampler.set_world_size(trainer.world_size)
     sampler.rank = trainer.global_rank
-
+    args.skip_steps = 0
     trainer.fit(embedding_model, 
                 train_dataloader,
                 dev_dataloader)
