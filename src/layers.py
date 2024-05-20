@@ -96,7 +96,8 @@ def inject_lora_adapter_with_state_dict(model: torch.nn.Module,
                                         alpha:int,
                                         targets,
                                         peft_name :str = None,
-                                        parent_model_name :str = None) -> torch.nn.Module:
+                                        parent_model_name :str = None,
+                                        pissa_dict: dict=None) -> torch.nn.Module:
     sub_modules = model.named_modules()
     def is_target(key):
         for target in targets:
@@ -119,30 +120,51 @@ def inject_lora_adapter_with_state_dict(model: torch.nn.Module,
                 if key != 'emb':
                     lora_A = lora_A+'.weight'
                     lora_B = lora_B+'.weight'
+            if pissa_dict is not None:
+                pissa_A = f'{key}.init_lora_A'
+                pissa_B = f'{key}.init_lora_B'
+                
             if lora_A in state_dict and lora_B in state_dict:
                 if isinstance(sub_module,nn.Linear):
-                        lora_linear = LoraLinear(sub_module)
-                        lora_linear.add_adapter(adapter_name,r,alpha)
-                        #remove the original module
-                        
-                        setattr(parent_module,target_key,lora_linear)
-                        #find the corresponding lora_A and lora_B
+
+                    lora_linear = LoraLinear(sub_module)
+                    lora_linear.add_adapter(adapter_name,r,alpha)
+                    #remove the original module 
+                    setattr(parent_module,target_key,lora_linear)
+
+                    #find the corresponding lora_A and lora_B
+                    if pissa_dict is not None:
+                        lora_linear.lora_A[adapter_name].weight.data = torch.cat((state_dict[lora_A],-pissa_dict[pissa_A]), dim=0).to(lora_linear.lora_A[adapter_name].weight.device)
+                        lora_linear.lora_B[adapter_name].weight.data = torch.cat((state_dict[lora_B],pissa_dict[pissa_B]), dim=-1).to(lora_linear.lora_B[adapter_name].weight.device)
+                    else:
                         lora_linear.lora_A[adapter_name].weight.data = state_dict[lora_A].to(lora_linear.lora_A[adapter_name].weight.device)
                         lora_linear.lora_B[adapter_name].weight.data = state_dict[lora_B].to(lora_linear.lora_B[adapter_name].weight.device)
                 elif isinstance(sub_module,LoraLinear):
                     sub_module.add_adapter(adapter_name,r,alpha)
-                    sub_module.lora_A[adapter_name].weight.data = state_dict[lora_A].to(sub_module.lora_A[adapter_name].weight.device)
-                    sub_module.lora_B[adapter_name].weight.data = state_dict[lora_B].to(sub_module.lora_B[adapter_name].weight.device)
+                    if pissa_dict is not None:
+                        sub_module.lora_A[adapter_name].weight.data = torch.cat((state_dict[lora_A],-pissa_dict[pissa_A]), dim=0).to(sub_module.lora_A[adapter_name].weight.device)
+                        sub_module.lora_B[adapter_name].weight.data = torch.cat((state_dict[lora_B],pissa_dict[pissa_B]), dim=-1).to(sub_module.lora_B[adapter_name].weight.device)
+                    else:
+                        sub_module.lora_A[adapter_name].weight.data = state_dict[lora_A].to(sub_module.lora_A[adapter_name].weight.device)
+                        sub_module.lora_B[adapter_name].weight.data = state_dict[lora_B].to(sub_module.lora_B[adapter_name].weight.device)
                 elif isinstance(sub_module,nn.Embedding):
                     lora_embedding = LoraEmbedding(sub_module)
                     lora_embedding.add_adapter(adapter_name,r,alpha)
                     setattr(parent_module,target_key,lora_embedding)
-                    lora_embedding.lora_A[adapter_name].data = state_dict[lora_A].to(lora_embedding.lora_A[adapter_name].data.device)
-                    lora_embedding.lora_B[adapter_name].data = state_dict[lora_B].to(lora_embedding.lora_B[adapter_name].data.device)
+                    if pissa_dict is not None:
+                        lora_embedding.lora_A[adapter_name].weight.data = torch.cat((state_dict[lora_A],-pissa_dict[pissa_A]), dim=0).to(lora_embedding.lora_A[adapter_name].data.device)
+                        lora_embedding.lora_B[adapter_name].weight.data = torch.cat((state_dict[lora_B],pissa_dict[pissa_B]), dim=-1).to(lora_embedding.lora_A[adapter_name].data.device)
+                    else:
+                        lora_embedding.lora_A[adapter_name].weight.data = state_dict[lora_A].to(lora_embedding.lora_A[adapter_name].data.device)
+                        lora_embedding.lora_B[adapter_name].weight.data = state_dict[lora_B].to(lora_embedding.lora_A[adapter_name].data.device)
                 elif isinstance(sub_module,LoraEmbedding):
                     sub_module.add_adapter(adapter_name,r,alpha)
-                    sub_module.lora_A[adapter_name].data = state_dict[lora_A].to(sub_module.lora_A[adapter_name].data.device)
-                    sub_module.lora_B[adapter_name].data = state_dict[lora_B].to(sub_module.lora_B[adapter_name].data.device)
+                    if pissa_dict is not None:
+                        sub_module.lora_A[adapter_name].weight.data = torch.cat((state_dict[lora_A],-pissa_dict[pissa_A]), dim=0).to(sub_module.lora_B[adapter_name].data.device)
+                        sub_module.lora_B[adapter_name].weight.data = torch.cat((state_dict[lora_B],pissa_dict[pissa_B]), dim=-1).to(sub_module.lora_B[adapter_name].data.device)
+                    else:
+                        sub_module.lora_A[adapter_name].weight.data = state_dict[lora_A].to(sub_module.lora_B[adapter_name].data.device)
+                        sub_module.lora_B[adapter_name].weight.data = state_dict[lora_B].to(sub_module.lora_B[adapter_name].data.device)
 
 def set_adapter(model, adapter_name):
     sub_modules = model.named_modules()

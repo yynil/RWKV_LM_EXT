@@ -42,11 +42,12 @@ def generate_text(model,instruction,input,tokenizer):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("Test the lora/pissa/state finetune generation/biencoder")
-    parser.add_argument("--base_model", type=str, help="Base model file",default='/media/yueyulin/KINGSTON/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth')
-    parser.add_argument("--chat_ckpt", type=str, help="chat_ckpt",default='/media/yueyulin/data_4t/models/lora_rwkv/epoch_7/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth')
-    parser.add_argument("--tokenizer_file", type=str, help="tokenizer_file",default='/home/yueyulin/github/RWKV_LM_EXT/tokenizer/rwkv_vocab_v20230424.txt')
+    parser.add_argument("--base_model", type=str, help="Base model file",default='/home/rwkv/JL/model/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth')
+    parser.add_argument("--chat_ckpt", type=str, help="chat_ckpt",default='/home/rwkv/JL/out_model/pissa/rwkv-0.pth')
+    parser.add_argument("--pissa_dict", type=str, help="pissa_dict",default='/home/rwkv/JL/out_model/pissa/init_lora.pth')
+    parser.add_argument("--tokenizer_file", type=str, help="tokenizer_file",default='/home/rwkv/JL/RWKV_LM_EXT/tokenizer/rwkv_vocab_v20230424.txt')
     parser.add_argument("--biencoder_ckpt", type=str, help="bi_encoder ckpt",default='/media/yueyulin/data_4t/models/lora/biencoder/epoch_1_step_430000/RWKV-x060-World-1B6-v2_rwkv_lora.pth')
-    parser.add_argument("--chat_lora_alpha", type=float, default=32, help="lora_alpha")
+    parser.add_argument("--chat_lora_alpha", type=float, default=8, help="lora_alpha")
     parser.add_argument("--chat_lora_r", type=int, default=8, help="lora_r")
     parser.add_argument("--chat_targets",nargs='+',default=["att","ffn"], help="chat_targets")
     parser.add_argument("--biencoder_lora_alpha", type=float, default=32, help="lora_alpha")
@@ -66,8 +67,10 @@ if __name__ == '__main__':
     model = model.to(device=device,dtype=dtype)
     from src.layers import inject_lora_adapter_with_state_dict,set_adapter
     # load the chat lora
+    print(model)
     if args.chat_ckpt:
         chat_lora_state_dict = torch.load(args.chat_ckpt, map_location='cpu')
+        pissa =  torch.load(args.pissa_dict, map_location='cpu')
         chat_lora_name = 'chat_lora_adapter'
         inject_lora_adapter_with_state_dict(
             model,
@@ -75,46 +78,47 @@ if __name__ == '__main__':
             chat_lora_state_dict,
             args.chat_lora_r,
             args.chat_lora_alpha,
-            args.chat_targets)
+            args.chat_targets,
+            pissa_dict=pissa)
         print(model)
-    if args.biencoder_ckpt:
-        biencoder_state_dict = torch.load(args.biencoder_ckpt, map_location='cpu')
-        biencoder_lora_name = 'biencoder_lora_adapter'
-        inject_lora_adapter_with_state_dict(
-            model,
-            biencoder_lora_name,
-            biencoder_state_dict,
-            args.biencoder_lora_r,
-            args.biencoder_lora_alpha,
-            args.biencoder_targets)
-        print(model)    
-        from src.model_run import RwkvForSequenceEmbedding
-        add_mlp = 'dense.weight' in biencoder_state_dict
-        output_dim = -1
-        should_delete_head = False
-        if add_mlp:
-            output_dim = biencoder_state_dict['dense.weight'].shape[0]
-        print(f'RWKV Embedding model add_mlp = {add_mlp} output_dim = {output_dim}')
-        rwkv_embedding = RwkvForSequenceEmbedding(model,
-                                                  add_mlp=add_mlp,
-                                                  output_dim=output_dim,
-                                                  should_delete_head=should_delete_head)
-        if add_mlp:
-            rwkv_embedding.dense.weight.data = biencoder_state_dict['dense.weight'].to(device=device,dtype=dtype)
-            rwkv_embedding.dense.bias.data = biencoder_state_dict['dense.bias'].to(device=device,dtype=dtype)
-        print(rwkv_embedding)
-        def encode_texts(text,chunk_size=1024):
-            input_ids =  tokenizer.encode(text)
-            input_ids.append(rwkv_embedding.embedding_id)
-            state = None
-            offset = 0
-            while offset < len(input_ids):
-                chunk = input_ids[offset:offset+chunk_size]
-                with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
-                    outputs,state = rwkv_embedding(torch.tensor(chunk,dtype=torch.long,device=device),state=state)
-                offset += len(chunk)
+    # if args.biencoder_ckpt:
+    #     biencoder_state_dict = torch.load(args.biencoder_ckpt, map_location='cpu')
+    #     biencoder_lora_name = 'biencoder_lora_adapter'
+    #     inject_lora_adapter_with_state_dict(
+    #         model,
+    #         biencoder_lora_name,
+    #         biencoder_state_dict,
+    #         args.biencoder_lora_r,
+    #         args.biencoder_lora_alpha,
+    #         args.biencoder_targets)
+    #     print(model)    
+    #     from src.model_run import RwkvForSequenceEmbedding
+    #     add_mlp = 'dense.weight' in biencoder_state_dict
+    #     output_dim = -1
+    #     should_delete_head = False
+    #     if add_mlp:
+    #         output_dim = biencoder_state_dict['dense.weight'].shape[0]
+    #     print(f'RWKV Embedding model add_mlp = {add_mlp} output_dim = {output_dim}')
+    #     rwkv_embedding = RwkvForSequenceEmbedding(model,
+    #                                               add_mlp=add_mlp,
+    #                                               output_dim=output_dim,
+    #                                               should_delete_head=should_delete_head)
+    #     if add_mlp:
+    #         rwkv_embedding.dense.weight.data = biencoder_state_dict['dense.weight'].to(device=device,dtype=dtype)
+    #         rwkv_embedding.dense.bias.data = biencoder_state_dict['dense.bias'].to(device=device,dtype=dtype)
+    #     print(rwkv_embedding)
+    #     def encode_texts(text,chunk_size=1024):
+    #         input_ids =  tokenizer.encode(text)
+    #         input_ids.append(rwkv_embedding.embedding_id)
+    #         state = None
+    #         offset = 0
+    #         while offset < len(input_ids):
+    #             chunk = input_ids[offset:offset+chunk_size]
+    #             with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
+    #                 outputs,state = rwkv_embedding(torch.tensor(chunk,dtype=torch.long,device=device),state=state)
+    #             offset += len(chunk)
 
-            return outputs
+    #         return outputs
     if args.chat_ckpt:
         set_adapter(model= model,adapter_name=chat_lora_name)
     
@@ -123,19 +127,19 @@ if __name__ == '__main__':
         output = generate_text(model,instruction,input_text,tokenizer)
         print(output)
 
-    if args.biencoder_ckpt:
-        set_adapter(model= model,adapter_name=biencoder_lora_name)
-        texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
-        outputs = [encode_texts(text) for text in texts]
-        print(outputs)
-        from sentence_transformers.util import pairwise_cos_sim
-        for qid in range(len(texts)):
-            query = outputs[qid]
-            for i in range(len(texts)):
-                if i != qid:
-                    print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
+    # if args.biencoder_ckpt:
+    #     set_adapter(model= model,adapter_name=biencoder_lora_name)
+    #     texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
+    #     outputs = [encode_texts(text) for text in texts]
+    #     print(outputs)
+    #     from sentence_transformers.util import pairwise_cos_sim
+    #     for qid in range(len(texts)):
+    #         query = outputs[qid]
+    #         for i in range(len(texts)):
+    #             if i != qid:
+    #                 print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
 
-            print('-----------------------')
+    #         print('-----------------------')
 
     if args.chat_ckpt:
         set_adapter(model= model,adapter_name=chat_lora_name)
@@ -145,19 +149,19 @@ if __name__ == '__main__':
         output = generate_text(model,instruction,input_text,tokenizer)
         print(output)
 
-    if args.biencoder_ckpt:
-        set_adapter(model= model,adapter_name=biencoder_lora_name)
-        texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
-        outputs = [encode_texts(text) for text in texts]
-        print(outputs)
-        from sentence_transformers.util import pairwise_cos_sim
-        for qid in range(len(texts)):
-            query = outputs[qid]
-            for i in range(len(texts)):
-                if i != qid:
-                    print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
+    # if args.biencoder_ckpt:
+    #     set_adapter(model= model,adapter_name=biencoder_lora_name)
+    #     texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
+    #     outputs = [encode_texts(text) for text in texts]
+    #     print(outputs)
+    #     from sentence_transformers.util import pairwise_cos_sim
+    #     for qid in range(len(texts)):
+    #         query = outputs[qid]
+    #         for i in range(len(texts)):
+    #             if i != qid:
+    #                 print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
 
-            print('-----------------------')
+    #         print('-----------------------')
 
 
     if args.chat_ckpt:
