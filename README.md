@@ -37,6 +37,11 @@ AnswerBot SFT: 链接: https://pan.baidu.com/s/1f61FwhinoGqWg-nlAWPnPw?pwd=b4ff 
 
 This is finetuned by RWKV's lora.
 
+AnswerBot PISSA SFT: 
+链接: https://pan.baidu.com/s/1T_bv_aF_6f7lVJTJeRB3Eg?pwd=6b6c 提取码: 6b6c 
+--来自百度网盘超级会员v6的分享
+
+
 BiEncoder: 链接: https://pan.baidu.com/s/1f61FwhinoGqWg-nlAWPnPw?pwd=b4ff 提取码: b4ff 
 --来自百度网盘超级会员v6的分享
 
@@ -51,3 +56,5 @@ Further more some utilities:
  - peft_train/hf2rwkv_lora.py  convert the lora check point trained by huggingface peft to rwkv lora format. This utility can be used to TURN BiEncoder checkpoint.
 
  - peft_train/peft_test.py is a better example to show how to use one base model to do variable stuffs in runtime by switching lora adapters only.
+
+    . if you're using PISSA checkpoint, please set --chat_lora_alpha 8 instead --chat_lora_alpha 32 in Lora.
