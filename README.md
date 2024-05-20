@@ -44,3 +44,10 @@ This is finetuned by peft.
 
 
 The usage of these two peft, please refer to src/layers.py main entry. Try python src/layers.py test_both to see the magic!
+
+
+Further more some utilities:
+
+ - peft_train/hf2rwkv_lora.py  convert the lora check point trained by huggingface peft to rwkv lora format. This utility can be used to TURN BiEncoder checkpoint.
+
+ - peft_train/peft_test.py is a better example to show how to use one base model to do variable stuffs in runtime by switching lora adapters only.
