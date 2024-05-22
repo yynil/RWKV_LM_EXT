@@ -67,7 +67,6 @@ if __name__ == '__main__':
     model = model.to(device=device,dtype=dtype)
     from src.layers import inject_lora_adapter_with_state_dict,set_adapter
     # load the chat lora
-    print(model)
     if args.chat_ckpt:
         chat_lora_state_dict = torch.load(args.chat_ckpt, map_location='cpu')
         pissa =  torch.load(args.pissa_dict, map_location='cpu')
@@ -80,7 +79,6 @@ if __name__ == '__main__':
             args.chat_lora_alpha,
             args.chat_targets,
             pissa_dict=pissa)
-        print(model)
     if args.biencoder_ckpt:
         biencoder_state_dict = torch.load(args.biencoder_ckpt, map_location='cpu')
         biencoder_lora_name = 'biencoder_lora_adapter'
@@ -91,7 +89,6 @@ if __name__ == '__main__':
             args.biencoder_lora_r,
             args.biencoder_lora_alpha,
             args.biencoder_targets)
-        print(model)    
         from src.model_run import RwkvForSequenceEmbedding
         add_mlp = 'dense.weight' in biencoder_state_dict
         output_dim = -1
@@ -106,7 +103,6 @@ if __name__ == '__main__':
         if add_mlp:
             rwkv_embedding.dense.weight.data = biencoder_state_dict['dense.weight'].to(device=device,dtype=dtype)
             rwkv_embedding.dense.bias.data = biencoder_state_dict['dense.bias'].to(device=device,dtype=dtype)
-        print(rwkv_embedding)
         def encode_texts(text,chunk_size=1024):
             input_ids =  tokenizer.encode(text)
             input_ids.append(rwkv_embedding.embedding_id)

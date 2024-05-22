@@ -3,6 +3,7 @@
 ########################################################################################################
 
 import os
+from typing import Dict, List, Optional, Union
 parent_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 import sys
 sys.path.append(parent_path)
@@ -1121,6 +1122,218 @@ def generate(model, ctx,tokenizer, token_count=100, args=PIPELINE_ARGS(), callba
             out_str += tmp
             out_last = i + 1
     return out_str   
+
+class BeamHypothesis:
+
+    def __init__(self,
+                 num_beams: int, 
+                 length_penalty: float, 
+                 early_stopping: bool, 
+                 max_length: Optional[int] = None) -> None:
+        """
+        Initialize n-best list of hypotheses.
+        """
+        self.length_penalty = length_penalty
+        self.early_stopping = early_stopping
+        self.max_length = max_length
+        self.num_beams = num_beams
+        self.beams = []
+        self.worst_score = 1e9
+
+        if not isinstance(self.early_stopping, bool) and self.max_length is None:
+            raise ValueError(
+                "When `do_early_stopping` is set to a string, `max_length` must be defined. Ensure it is passed to the"
+                " BeamScorer class instance at initialization time."
+            )
+    def __len__(self):
+        """
+        Number of hypotheses in the list.
+        """
+        return len(self.beams)
+
+    def add(
+        self,
+        hyp: torch.LongTensor,
+        sum_logprobs: float,
+        beam_indices: Optional[torch.LongTensor] = None,
+        generated_len: Optional[int] = None,
+    ):
+        """
+        Add a new hypothesis to the list.
+        """
+        if generated_len is not None:
+            score = sum_logprobs / (generated_len**self.length_penalty)
+        # This 'else' case exists for retrocompatibility
+        else:
+            score = sum_logprobs / (hyp.shape[-1] ** self.length_penalty)
+
+        if len(self) < self.num_beams or score > self.worst_score:
+            self.beams.append((score, hyp, beam_indices))
+            if len(self) > self.num_beams:
+                sorted_next_scores = sorted([(s, idx) for idx, (s, _, _) in enumerate(self.beams)])
+                del self.beams[sorted_next_scores[0][1]]
+                self.worst_score = sorted_next_scores[1][0]
+            else:
+                self.worst_score = min(score, self.worst_score)
+
+    def is_done(self, best_sum_logprobs: float, cur_len: int, decoder_prompt_len: Optional[int] = 0) -> bool:
+        """
+        If there are enough hypotheses and that none of the hypotheses being generated can become better than the worst
+        one in the heap, then we are done with this sentence.
+        """
+
+        if len(self) < self.num_beams:
+            return False
+
+        # `True`: stop as soon as at least `num_beams` hypotheses are finished
+        if self.early_stopping is True:
+            return True
+        # `False`: heuristic -- compute best possible score from `cur_len`, even though it is not entirely accurate
+        #  when `length_penalty` is positive. See the discussion below for more details.
+        # https://github.com/huggingface/transformers/pull/20901#issuecomment-1369845565
+        elif self.early_stopping is False:
+            highest_attainable_score = best_sum_logprobs / (cur_len - decoder_prompt_len) ** self.length_penalty
+            ret = self.worst_score >= highest_attainable_score
+            return ret
+        # `"never"`: compute the best possible score, depending on the signal of `length_penalty`
+        else:
+            # `length_penalty` > 0.0 -> max denominator is obtaned from `max_length`, not from `cur_len` -> min
+            # abs(`highest_attainable_score`) is obtained -> `highest_attainable_score` is negative, hence we obtain
+            # its max this way
+            if self.length_penalty > 0.0:
+                if self.max_length <= decoder_prompt_len:
+                    raise ValueError("max_length is not larger than decoder prompt length")
+                highest_attainable_score = (
+                    best_sum_logprobs / (self.max_length - decoder_prompt_len) ** self.length_penalty
+                )
+            # the opposite logic applies here (max `highest_attainable_score` from `cur_len`)
+            else:
+                highest_attainable_score = best_sum_logprobs / (cur_len - decoder_prompt_len) ** self.length_penalty
+            ret = self.worst_score >= highest_attainable_score
+            return ret
+
+
+def do_repetition_penalty(input_ids, next_token_scores, repetition_penalty):
+    score = torch.gather(next_token_scores, 0, input_ids)
+    score = torch.where(score < 0, score * repetition_penalty, score / repetition_penalty)
+    scores_processed = next_token_scores.scatter(0, input_ids, score)
+    return scores_processed
+
+def clone_state(state):
+    if state is None:
+        return None
+    return [s.clone() for s in state]
+
+def generate_beamsearch(model, 
+                        ctx,
+                        tokenizer, 
+                        token_count=100, 
+                        callback=None, 
+                        state=None,
+                        num_beams=10,
+                        return_num_sequences=5,
+                        eos_id = [0,1],
+                        block_size = 512,
+                        device='cuda',
+                        repetition_penalty = 1.5,
+                        do_sample = True,
+                        num_group = 5,
+                        length_penalty = 0.5,
+                        ):
+    input_ids = torch.tensor(
+        tokenizer.encode(ctx), dtype=torch.long, device=device)
+    group_size = num_beams // num_group
+    hypothesis = [BeamHypothesis(num_beams, length_penalty, False,token_count) for _ in range(num_group)]
+    is_initalized = False
+    inputs = []
+    reserve_beam_size = max(2,1+len(eos_id))*num_beams
+    groups_done = [False for _ in range(num_group)]
+    for step in range(token_count):
+        results = []
+        if not is_initalized:
+            #initialize the output and state
+            idx = 0
+            ctx_len = len(input_ids)
+            #create initial state
+            while idx < ctx_len:
+                out, state = model.forward(input_ids[idx:idx+block_size], state)
+                idx += block_size
+            is_initalized = True
+            results.append((torch.tensor([],dtype=torch.long,device=device),0.0,out,clone_state(state),None))
+            #now we can start to do beam search here with empty input_ids
+        for input_ids,logprob, old_state,beam_idx in inputs:
+            out, new_state = model.forward(input_ids[-1:], clone_state(old_state))
+            results.append((input_ids,logprob,out,new_state,beam_idx))
+        for _,_,state,_ in inputs:
+            del state
+        inputs = []
+        for idx, (input_ids,logprob,out,state,beam_idx) in enumerate(results):
+            next_token_scores = F.log_softmax(out,dim=-1)
+            do_repetition_penalty(input_ids, next_token_scores, repetition_penalty)
+            if do_sample:
+                probs = F.softmax(next_token_scores,dim=-1)
+                next_tokens = torch.multinomial(probs,num_samples=reserve_beam_size)
+                next_token_scores = torch.gather(next_token_scores, -1, next_tokens)
+                next_token_scores, _indices = torch.sort(next_token_scores, descending=True, dim=0)
+                next_tokens = torch.gather(next_tokens, -1, _indices)
+            else:
+                next_token_scores, next_tokens = torch.topk(
+                    next_token_scores, reserve_beam_size, dim=0, largest=True, sorted=True
+                )
+
+            #handle the search results
+            added_cnt = 0
+            for token_rank,(token,score) in enumerate(zip(next_tokens,next_token_scores)):
+                new_score = score + logprob
+                if token in eos_id and token_rank < group_size:
+                    hyp_group_idx = token_rank if beam_idx is None else beam_idx // group_size
+                    hypothesis[hyp_group_idx].add(input_ids,new_score,beam_idx if beam_idx is not None else token_rank,step+1)
+                else:
+                    new_input_ids = torch.cat([input_ids,token.unsqueeze(0)])
+                    inputs.append((new_input_ids,new_score,state,beam_idx if beam_idx is not None else token_rank))
+                    added_cnt += 1
+                
+                if (added_cnt >= group_size and beam_idx is not None) or (added_cnt >= num_beams and beam_idx is None): 
+                    if beam_idx is not None:
+                        hyp_group_idx = beam_idx // group_size
+                        if hypothesis[hyp_group_idx].is_done(next_token_scores.max().item(),step+1):
+                            groups_done[hyp_group_idx] = True
+                    break
+        #check if we should stop
+        should_stop = sum(groups_done)
+        if should_stop == num_group:
+            break
+    #return the top k sequences
+    outputs = []
+    for hyp in hypothesis:
+        outputs += hyp.beams
+    outputs = sorted(outputs,key=lambda x:x[0].item(),reverse=True)
+    outputs = outputs[:return_num_sequences]
+    return outputs
+
+    # while idx < ctx_len:
+    #     out, state = model.forward(input_ids[idx:idx+block_size], state)
+    #     idx += block_size
+    # reserve_beam_size = max(2,len(eos_id))*num_beams
+    # beam_hypotheses = BeamHypothesis(num_beams=reserve_beam_size, length_penalty=1.0, early_stopping=False)
+    # next_token_scores = F.log_softmax(out,dim=-1)#size s (vocab_size)
+    # beam_search = [(torch.tensor([],dtype=torch.long,device=device), 0.0,next_token_scores, state)]
+    # for step in range(token_count):
+    #     for beam in beam_search:
+    #         input_ids, sum_logprobs, next_token_scores, state = beam
+    #         do_repetition_penalty(input_ids, next_token_scores, repetition_penalty)
+    #         if do_sample:
+    #             probs = F.softmax(next_token_scores,dim=-1)#size s (vocab_size)
+    #             next_tokens = torch.multinomial(probs,
+    #                                             num_samples=reserve_beam_size)#size is (reserve_beam_size)
+    #             next_token_scores = torch.gather(next_token_scores, -1, next_tokens)
+    #             next_token_scores, _indices = torch.sort(next_token_scores, descending=True, dim=1)
+    #             next_tokens = torch.gather(next_tokens, -1, _indices)
+    #         else:
+    #             next_token_scores, next_tokens = torch.topk(
+    #                 next_token_scores, reserve_beam_size, dim=1, largest=True, sorted=True
+    #             )
+            
 
 gen_cnt = 0
 
