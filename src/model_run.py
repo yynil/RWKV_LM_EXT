@@ -24,7 +24,6 @@ import pytorch_lightning as pl
 from peft.tuners.lora.layer import LoraLayer
 def __nop(ob):
     return ob
-
 from torch._lowrank import svd_lowrank
 
 MyModule = nn.Module
@@ -1081,7 +1080,15 @@ def sample_logits(logits, temperature=1.0, top_p=0.85, top_k=0):
         return int(out)
     
 from rwkv.utils import PIPELINE_ARGS
-def generate(model, ctx,tokenizer, token_count=100, args=PIPELINE_ARGS(), callback=None, state=None,device='cuda'):
+from src.logits_processors import TopKLogitsProcess,TopPLogitsProcess,RepetitionPenaltyLogitsProcessor
+def generate(model, ctx,tokenizer, token_count=100, args=PIPELINE_ARGS(), callback=None, state=None,device='cuda',repetition_penalty=1.0):
+    logits_warpper = []
+    logits_processes = []
+    logits_warpper.append(TopPLogitsProcess(top_p=args.top_p,min_tokens_to_keep=args.top_k if args.top_k > 0 else 1))
+    if args.top_k > 0:
+        logits_warpper.append(TopKLogitsProcess(top_k=args.top_k))
+    logits_processes.append(RepetitionPenaltyLogitsProcessor(penalty=repetition_penalty))
+    
     all_tokens = []
     out_last = 0
     out_str = ''
@@ -1100,9 +1107,12 @@ def generate(model, ctx,tokenizer, token_count=100, args=PIPELINE_ARGS(), callba
             out[n] = -float('inf')
         for n in occurrence:
             out[n] -= (args.alpha_presence + occurrence[n] * args.alpha_frequency)
-        
-        # sampler
-        token = sample_logits(out, temperature=args.temperature, top_p=args.top_p, top_k=args.top_k)
+        for process in logits_warpper:
+            out = process.process(torch.tensor(all_tokens,dtype=torch.long,device=out.device), out)
+        for process in logits_processes:
+            out = process.process(torch.tensor(all_tokens,dtype=torch.long,device=out.device), out)
+        probs = F.softmax(out, dim=-1)
+        token =  int(torch.multinomial(probs, num_samples=1)[0])
         if token in args.token_stop:
             break
         all_tokens += [token]
@@ -1115,12 +1125,13 @@ def generate(model, ctx,tokenizer, token_count=100, args=PIPELINE_ARGS(), callba
         # print(occurrence) # debug
         
         # output
-        tmp = tokenizer.decode(all_tokens[out_last:])
-        if '\ufffd' not in tmp: # is valid utf-8 string?
-            if callback:
+        if callback:
+            tmp = tokenizer.decode(all_tokens[out_last:])
+            if '\ufffd' not in tmp: # is valid utf-8 string?
                 callback(tmp)
-            out_str += tmp
-            out_last = i + 1
+                out_str += tmp
+                out_last = i + 1
+    out_str = tokenizer.decode(all_tokens)
     return out_str   
 
 class BeamHypothesis:
@@ -1213,12 +1224,6 @@ class BeamHypothesis:
             return ret
 
 
-def do_repetition_penalty(input_ids, next_token_scores, repetition_penalty):
-    score = torch.gather(next_token_scores, 0, input_ids)
-    score = torch.where(score < 0, score * repetition_penalty, score / repetition_penalty)
-    scores_processed = next_token_scores.scatter(0, input_ids, score)
-    return scores_processed
-
 def clone_state(state):
     if state is None:
         return None
@@ -1239,7 +1244,17 @@ def generate_beamsearch(model,
                         do_sample = True,
                         num_group = 5,
                         length_penalty = 0.5,
+                        is_sum_logprobs = False,
+                        top_p = 0.96,
+                        top_k = 30,
                         ):
+    logits_warpper = []
+    logits_processes = []
+    if do_sample:
+        logits_warpper.append(TopPLogitsProcess(top_p=top_p,min_tokens_to_keep=top_k if top_k > 0 else 1))
+        if top_k > 0:
+            logits_warpper.append(TopKLogitsProcess(top_k=top_k))
+    logits_processes.append(RepetitionPenaltyLogitsProcessor(penalty=repetition_penalty))
     input_ids = torch.tensor(
         tokenizer.encode(ctx), dtype=torch.long, device=device)
     group_size = num_beams // num_group
@@ -1269,8 +1284,15 @@ def generate_beamsearch(model,
         inputs = []
         for idx, (input_ids,logprob,out,state,beam_idx) in enumerate(results):
             next_token_scores = F.log_softmax(out,dim=-1)
-            do_repetition_penalty(input_ids, next_token_scores, repetition_penalty)
+            if is_sum_logprobs:
+                next_token_scores = next_token_scores+torch.tensor(logprob,dtype=torch.float,device=device)
+            for logits_process in logits_processes:
+                next_token_scores = logits_process.process(input_ids,next_token_scores)
+
             if do_sample:
+                for logits_warper in logits_warpper:
+                    next_token_scores = logits_warper.process(input_ids,next_token_scores)
+                #check if all are torch.tensor(float('-inf'))
                 probs = F.softmax(next_token_scores,dim=-1)
                 next_tokens = torch.multinomial(probs,num_samples=reserve_beam_size)
                 next_token_scores = torch.gather(next_token_scores, -1, next_tokens)
@@ -1280,11 +1302,12 @@ def generate_beamsearch(model,
                 next_token_scores, next_tokens = torch.topk(
                     next_token_scores, reserve_beam_size, dim=0, largest=True, sorted=True
                 )
-
             #handle the search results
             added_cnt = 0
             for token_rank,(token,score) in enumerate(zip(next_tokens,next_token_scores)):
-                new_score = score + logprob
+                if score == float('-inf'):
+                    continue
+                new_score = score 
                 if token in eos_id and token_rank < group_size:
                     hyp_group_idx = token_rank if beam_idx is None else beam_idx // group_size
                     hypothesis[hyp_group_idx].add(input_ids,new_score,beam_idx if beam_idx is not None else token_rank,step+1)
@@ -1304,11 +1327,14 @@ def generate_beamsearch(model,
         if should_stop == num_group:
             break
     #return the top k sequences
+    #handle the open searches
     outputs = []
+    for idx, (input_ids,logprob,state,beam_idx) in enumerate(inputs):
+        outputs.append((logprob/(step**length_penalty),input_ids,beam_idx))
     for hyp in hypothesis:
         outputs += hyp.beams
     outputs = sorted(outputs,key=lambda x:x[0].item(),reverse=True)
-    outputs = outputs[:return_num_sequences]
+    outputs = outputs
     return outputs
 
     # while idx < ctx_len:

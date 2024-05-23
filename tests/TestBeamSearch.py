@@ -21,19 +21,37 @@ def load_base_model(base_model):
     model = RWKV(args)
     info = model.load_state_dict(w)
     return model
+
+def generate_text(model,instruction,input,tokenizer):
+    gen_args = PIPELINE_ARGS(temperature = 1.0, top_p = 0, top_k = 0, # top_k = 0 then ignore
+                        alpha_frequency = 0.25,
+                        alpha_presence = 0.25,
+                        alpha_decay = 0.996, # gradually decay the penalty
+                        token_ban = [], # ban the generation of some tokens
+                        token_stop = [0,1], # stop generation whenever you see any token here
+                        chunk_len = 512)
+    cat_char = '🐱'
+    bot_char = '🤖'
+    ctx = f'{cat_char}:{instruction}\n{input}\n{bot_char}:'
+    with torch.no_grad():
+        with torch.autocast(enabled=True,device_type='cuda',dtype=torch.bfloat16):
+            output = generate(model, ctx,tokenizer, token_count=128, args=gen_args,callback=None)
+    return output
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("Test the lora/pissa/state finetune generation/biencoder")
     parser.add_argument("--base_model", type=str, help="Base model file",default='/media/yueyulin/KINGSTON/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth')
-    parser.add_argument("--chat_ckpt", type=str, help="chat_ckpt",default='/media/yueyulin/data_4t/models/pissa_r64/epoch_0/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth')
+    parser.add_argument("--chat_ckpt", type=str, help="chat_ckpt",default='/media/yueyulin/data_4t/models/pissa_r64/epoch_2/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth')
     parser.add_argument("--pissa_dict", type=str, help="pissa_dict",default='/media/yueyulin/data_4t/models/pissa_r64/init_pissa.pth')
     parser.add_argument("--tokenizer_file", type=str, help="tokenizer_file",default='/home/yueyulin/github/RWKV_LM_EXT/tokenizer/rwkv_vocab_v20230424.txt')
     parser.add_argument("--chat_lora_alpha", type=float, default=64, help="lora_alpha")
     parser.add_argument("--chat_lora_r", type=int, default=64, help="lora_r")
     parser.add_argument("--chat_targets",nargs='+',default=["att","ffn"], help="chat_targets")
+    parser.add_argument("--do_pissa", action='store_true', help="do_pissa")
     args = parser.parse_args()
     print(args)
     setup_env()
-    from src.model_run import RWKV,PIPELINE_ARGS,create_empty_args,load_embedding_ckpt_and_parse_args,generate_beamsearch
+    from src.model_run import RWKV,PIPELINE_ARGS,create_empty_args,load_embedding_ckpt_and_parse_args,generate_beamsearch,generate
     device = 'cuda'
     dtype = torch.bfloat16
     from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
@@ -44,7 +62,7 @@ if __name__ == '__main__':
     
     if args.chat_ckpt:
         chat_lora_state_dict = torch.load(args.chat_ckpt, map_location='cpu')
-        pissa =  torch.load(args.pissa_dict, map_location='cpu')
+        pissa =  torch.load(args.pissa_dict, map_location='cpu') if args.do_pissa else None
         chat_lora_name = 'chat_lora_adapter'
         inject_lora_adapter_with_state_dict(
             model,
@@ -66,11 +84,17 @@ if __name__ == '__main__':
                 results = generate_beamsearch(
                     model, 
                     ctx,tokenizer, 
-                    token_count=10,
+                    token_count=20,
                     num_beams=5,
                     return_num_sequences=5,
                     num_group=5,
-                    do_sample=True)
+                    do_sample=True,
+                    is_sum_logprobs=True,
+                    length_penalty=0.6)
                 import math
                 for score, output,beam_idx in results:
                     print(f'{math.exp(score.item())}: {tokenizer.decode(output.tolist())} beam_idx={beam_idx}')
+
+        #test the generate
+        output = generate_text(model,instruction,input_text,tokenizer)
+        print(output)
