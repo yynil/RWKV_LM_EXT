@@ -1285,7 +1285,7 @@ def generate_beamsearch(model,
         for idx, (input_ids,logprob,out,state,beam_idx) in enumerate(results):
             next_token_scores = F.log_softmax(out,dim=-1)
             if is_sum_logprobs:
-                next_token_scores = next_token_scores+torch.tensor(logprob,dtype=torch.float,device=device)
+                next_token_scores = next_token_scores+logprob
             for logits_process in logits_processes:
                 next_token_scores = logits_process.process(input_ids,next_token_scores)
 
@@ -1335,7 +1335,7 @@ def generate_beamsearch(model,
         outputs += hyp.beams
     outputs = sorted(outputs,key=lambda x:x[0].item(),reverse=True)
     outputs = outputs
-    return outputs
+    return outputs[:return_num_sequences]
 
     # while idx < ctx_len:
     #     out, state = model.forward(input_ids[idx:idx+block_size], state)
