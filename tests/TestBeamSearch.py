@@ -79,7 +79,9 @@ if __name__ == '__main__':
         cat_char = '🐱'
         bot_char = '🤖'
         ctx = f'{cat_char}:{instruction}\n{input_text}\n{bot_char}:'
+        print('\033[31m',ctx,'\033[0m')
         with torch.no_grad():
+            num_beams = 5
             with torch.autocast(enabled=True,device_type='cuda',dtype=torch.bfloat16):
                 results = generate_beamsearch(
                     model, 
@@ -91,10 +93,12 @@ if __name__ == '__main__':
                     do_sample=True,
                     is_sum_logprobs=True,
                     length_penalty=0.6)
+                print(f'\033[33mbeam search results with all beams{num_beams}\033[0m')
                 import math
                 for score, output,beam_idx in results:
-                    print(f'{math.exp(score.item())}: {tokenizer.decode(output.tolist())} beam_idx={beam_idx}')
+                    print(f'\033[32m{math.exp(score.item())}: {tokenizer.decode(output.tolist())} beam_idx={beam_idx}\033[0m')
 
         #test the generate
+        print('\033[33msampling generation\033[0m')
         output = generate_text(model,instruction,input_text,tokenizer)
-        print(output)
+        print('\033[32m',output,'\033[0m')

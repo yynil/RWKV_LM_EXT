@@ -39,6 +39,9 @@ graph LR
   This is finetuned by RWKV's lora.
   - Huggingface: https://huggingface.co/yueyulin/rwkv_peft_sft_lora
 
+- AnswerBot SFT-Pissa Rank64
+  - This is a pissa fine tuned with rank 64: https://huggingface.co/yueyulin/tigerbot_chat_sft_pissa_r64
+
 - AnswerBot PISSA SFT: 
   - 链接: https://pan.baidu.com/s/1T_bv_aF_6f7lVJTJeRB3Eg?pwd=6b6c 提取码: 6b6c --来自百度网盘超级会员v6的分享
 
@@ -84,3 +87,8 @@ python data/SftUtilities.py --input_dir JSON_DIR --output_dir DATASET_DIR --toke
   RWKV_TRAIN_TYPE=pissa python peft_train/peft_train_sft.py --train_data /home/rwkv/data/tigerbot_sft_dataset --model_file MODEL_DIR/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth --output_dir OUTPUT_DIR/pissa_rwkv --train_type pissa --log_every_n_steps 100000 --target_modules att ffn --log_every_n_steps 100000 --wandb pissa_tigerbots --num_epochs 3 --train_lengths 64 128 256 512 1024 2048 --train_batch_sizes 32 16 8 4 2 1
   ```
 
+## Beam search  with logits processors
+
+Now user can use beam search to get variable results with beam search. Try src/tests/TestBeamSearch.py. 
+
+![截图 2024-05-24 10-22-40.png](https://img2.imgtp.com/2024/05/24/FLxIv36M.png)
