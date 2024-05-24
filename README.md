@@ -98,3 +98,4 @@ Now user can use beam search to get variable results with beam search. Try src/t
 
 ## Encoders for inference
 Please refer infer/encoders to utilize the pure RWKV's mulitple lora adapters.
+![截图 2024-05-24 17-43-40.png](https://img2.imgtp.com/2024/05/24/aPhjPRSA.png)
