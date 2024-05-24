@@ -55,6 +55,8 @@ graph LR
    There are two files in epoch_1_step_430000:
     - RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth is trained and saved by huggingface peft injection model.
     - RWKV-x060-World-1B6-v2_rwkv_lora.pth is converted by peft_train/hf2rwkv_lora.py utility. 
+- Cross Encoder
+  - Huggingface: https://huggingface.co/yueyulin/rwkv_cross_encoder
 
 
 Try python peft_train/peft_test.py to see how both 2 sft work seemlessly. In the future more sft parameters can work together to build a more sophiscated AI assistant.
@@ -92,3 +94,7 @@ python data/SftUtilities.py --input_dir JSON_DIR --output_dir DATASET_DIR --toke
 Now user can use beam search to get variable results with beam search. Try src/tests/TestBeamSearch.py. 
 
 ![截图 2024-05-24 10-22-40.png](https://img2.imgtp.com/2024/05/24/FLxIv36M.png)
+
+
+## Encoders for inference
+Please refer infer/encoders to utilize the pure RWKV's mulitple lora adapters.
