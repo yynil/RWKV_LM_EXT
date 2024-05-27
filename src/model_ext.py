@@ -451,6 +451,31 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
             self.log("train_loss", loss)
             return loss
         else:
+        
+        # It expects that each of the InputExamples consists of a pair of texts and a float valued label, representing
+        # the expected similarity score between the pair.
+
+        # It computes the following loss function:
+
+        # ``loss = logsum(1+exp(s(k,l)-s(i,j))+exp...)``, where ``(i,j)`` and ``(k,l)`` are any of the input pairs in the
+        # batch such that the expected similarity of ``(i,j)`` is greater than ``(k,l)``. The summation is over all possible
+        # pairs of input pairs in the batch that match this condition.
+
+        # Anecdotal experiments show that this loss function produces a more powerful training signal than :class:`CosineSimilarityLoss`,
+        # resulting in faster convergence and a final model with superior performance. Consequently, CoSENTLoss may be used
+        # as a drop-in replacement for :class:`CosineSimilarityLoss` in any training script.
+
+        # :param model: SentenceTransformerModel
+        # :param similarity_fct: Function to compute the PAIRWISE similarity between embeddings. Default is ``util.pairwise_cos_sim``.
+        # :param scale: Output of similarity function is multiplied by scale value. Represents the inverse temperature.
+
+        # References:
+        #     - For further details, see: https://kexue.fm/archives/8847
+
+        # Requirements:
+        #     - Sentence pairs with corresponding similarity scores in range of the similarity function. Default is [-1,1].
+
+  
             labels = torch.ones(positive_embeddings.shape[0]).to(positive_embeddings.device)
             from sentence_transformers import util
             similarity_fct = util.pairwise_cos_sim
@@ -458,8 +483,7 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
             if negative is not None:
                 negative_embeddings = self.forward(negative)
                 scores = torch.cat([scores,similarity_fct(query_embeddings, negative_embeddings)])
-                labels = torch.cat([labels,torch.zeros(negative_embeddings.shape[0]).to(positive_embeddings.device)])
-            labels = labels.bfloat16()
+                labels = torch.cat([labels,torch.full((negative_embeddings.shape[0],),-1).to(positive_embeddings.device)])
             
             scores = scores * 20
             scores = scores[:, None] - scores[None, :]
