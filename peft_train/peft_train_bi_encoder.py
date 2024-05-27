@@ -225,25 +225,25 @@ if __name__ == '__main__':
         LORA_CONFIG['r'] = args.lora_r
         LORA_CONFIG['alpha'] = args.lora_alpha
         LORA_CONFIG['dropout'] = args.lora_dropout
-        model = RWKV(args)
-        print(model)
-        inform = model.load_state_dict(w,strict=False)
+        rwkv_base_model = RWKV(args)
+        print(rwkv_base_model)
+        inform = rwkv_base_model.load_state_dict(w,strict=False)
         print(inform)
-        for name, param in model.named_parameters():
+        for name, param in rwkv_base_model.named_parameters():
             if 'lora_' in name :
                 param.requires_grad = True
             else:
                 param.requires_grad = False
         init_dict = {}
         rank_zero_info(f"########## Init PISSA... ##########")
-        for name, m in model.named_modules():
+        for name, m in rwkv_base_model.named_modules():
             if hasattr(m, "pissa_init") and callable(getattr(m, "pissa_init")):
                 m.pissa_init(args.svd_niter)
                 init_dict[f'{name}.init_lora_A'] = m.lora_A.data
                 init_dict[f'{name}.init_lora_B'] = m.lora_B.data
         torch.save(init_dict, f'{args.proj_dir}/init_pissa.pth')
        
-        print(model)
+        print(rwkv_base_model)
     else:
         rwkv_base_model = RWKV(args)
         print(rwkv_base_model)
