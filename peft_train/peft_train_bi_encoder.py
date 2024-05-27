@@ -220,6 +220,7 @@ if __name__ == '__main__':
     if args.do_rwkv_peft:
         args.lora = True
         args.parts = args.target_modules
+        args.svd_niter = 4
         from src.model import LORA_CONFIG
         LORA_CONFIG['r'] = args.lora_r
         LORA_CONFIG['alpha'] = args.lora_alpha
