@@ -89,6 +89,7 @@ from src.model_ext import RwkvForSequenceEmbedding, load_ckpt_and_parse_args
 from peft_train.data_collators import pad_and_truncated
 import torch
 from torch.utils.data import DataLoader
+from lightning_utilities.core.rank_zero import rank_zero_info
 def create_arg_parser():
     import argparse
     parser = argparse.ArgumentParser(description='peft train BiEncoder')
@@ -152,10 +153,14 @@ def create_arg_parser():
     parser.add_argument('--lora_r',type=int,default=8)
     parser.add_argument('--lora_alpha',type=int,default=32)
     parser.add_argument('--lora_dropout',type=float,default=0.1)
+    parser.add_argument('--do_rwkv_peft',action='store_true',help='do rwkv peft')
+    parser.add_argument('--do_pissa',action='store_true',help='do rwkv pissa init')
+    
 
     #add lask peft checkpoint path
     parser.add_argument('--peft_checkpoint',type=str,help='peft checkpoint path',default=None)
     parser.add_argument('--skip_steps',type=int,default=0,help='skip steps in the peft checkpoint')
+    
     return parser
 
 def configure_args(args):
@@ -208,32 +213,60 @@ if __name__ == '__main__':
     
     w = load_ckpt_and_parse_args(args.model_file,args)
 
-    rwkv_base_model = RWKV(args)
-    print(rwkv_base_model)
-    inform = rwkv_base_model.load_state_dict(w)
-    print(inform)
+    
 
 
 
-    #Configure the peft configuration to inject 
-    lora_config = None
-    if args.lora_type == 'lora':
-        from peft import LoraConfig
-        lora_config = LoraConfig(r=args.lora_r,lora_alpha=args.lora_alpha,target_modules=args.target_modules,lora_dropout=args.lora_dropout)
-    elif args.lora_type == 'adalora':
-        from peft import AdaLoraConfig
-        lora_config = AdaLoraConfig(r=args.lora_r,lora_alpha=args.lora_alpha,target_modules=args.target_modules,lora_dropout=args.lora_dropout)
+    if args.do_rwkv_peft:
+        args.lora = True
+        args.parts = args.target_modules
+        from src.model import LORA_CONFIG
+        LORA_CONFIG['r'] = args.lora_r
+        LORA_CONFIG['alpha'] = args.lora_alpha
+        LORA_CONFIG['dropout'] = args.lora_dropout
+        model = RWKV(args)
+        print(model)
+        inform = model.load_state_dict(w,strict=False)
+        print(inform)
+        for name, param in model.named_parameters():
+            if 'lora_' in name :
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+        init_dict = {}
+        rank_zero_info(f"########## Init PISSA... ##########")
+        for name, m in model.named_modules():
+            if hasattr(m, "pissa_init") and callable(getattr(m, "pissa_init")):
+                m.pissa_init(args.svd_niter)
+                init_dict[f'{name}.init_lora_A'] = m.lora_A.data
+                init_dict[f'{name}.init_lora_B'] = m.lora_B.data
+        torch.save(init_dict, f'{args.proj_dir}/init_pissa.pth')
+       
+        print(model)
+    else:
+        rwkv_base_model = RWKV(args)
+        print(rwkv_base_model)
+        inform = rwkv_base_model.load_state_dict(w)
+        print(inform)
+        #Configure the peft configuration to inject 
+        lora_config = None
+        if args.lora_type == 'lora':
+            from peft import LoraConfig
+            lora_config = LoraConfig(r=args.lora_r,lora_alpha=args.lora_alpha,target_modules=args.target_modules,lora_dropout=args.lora_dropout)
+        elif args.lora_type == 'adalora':
+            from peft import AdaLoraConfig
+            lora_config = AdaLoraConfig(r=args.lora_r,lora_alpha=args.lora_alpha,target_modules=args.target_modules,lora_dropout=args.lora_dropout)
 
-    #Inject the lora configuration to the model
-    from peft import inject_adapter_in_model
-    rwkv_base_model = inject_adapter_in_model(lora_config,rwkv_base_model,adapter_name='embedding_lora')
-    print(rwkv_base_model)
-    def print_trainable_params(model):
-        #count whole model parameters and print trainable parameters' count and percentage
-        total_params = sum(p.numel() for p in model.parameters())
-        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(colorama.Fore.GREEN + f'total params: {total_params}, trainable params: {trainable_params}, trainable params percentage: {trainable_params/total_params*100:.2f}%')
-    print_trainable_params(rwkv_base_model)
+        #Inject the lora configuration to the model
+        from peft import inject_adapter_in_model
+        rwkv_base_model = inject_adapter_in_model(lora_config,rwkv_base_model,adapter_name='embedding_lora')
+        print(rwkv_base_model)
+        def print_trainable_params(model):
+            #count whole model parameters and print trainable parameters' count and percentage
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            print(colorama.Fore.GREEN + f'total params: {total_params}, trainable params: {trainable_params}, trainable params percentage: {trainable_params/total_params*100:.2f}%')
+        print_trainable_params(rwkv_base_model)
 
 
     embedding_model = RwkvForSequenceEmbedding(rwkv_base_model,
