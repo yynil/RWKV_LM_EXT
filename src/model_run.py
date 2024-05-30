@@ -597,6 +597,7 @@ class RwkvForSequenceEmbedding(torch.nn.Module):
 
     def pooling(self, x,actual_len):
         if self.pooling_type == 'weightedmean':
+            actual_len = actual_len +1
             #x is (bs,seq_len,emb_dim)
             #actual_len is (bs,) int tensor which indicates the actual length of each sequence
             #weights is (bs,seq_len) float tensor which indicates the weight of each token, the weight[i] = (i+1)/actual_len[i], the last token embedding is 1 and others are degraded by the distance to the last token 
@@ -647,7 +648,7 @@ class RwkvForSequenceEmbedding(torch.nn.Module):
             x = self.rwkvModel.ln_out(x)
 
             #calculate the idx actual length which is first self.embedding_id
-            idx_actual_len = torch.tensor([T],device = idx.device,dtype=torch.long)
+            idx_actual_len = torch.tensor([T-1],device = idx.device,dtype=torch.long)
             x = self.pooling(x.unsqueeze(0),idx_actual_len)
             if self.add_mlp:
                 x = self.activation(self.dense(x))

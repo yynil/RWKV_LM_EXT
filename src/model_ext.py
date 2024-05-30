@@ -497,6 +497,6 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
 
             # append a zero as e^0 = 1
             scores = torch.cat((torch.zeros(1).to(scores.device), scores.view(-1)), dim=0)
-            loss = torch.logsumexp(scores, dim=0)
+            loss = torch.logsumexp(scores, dim=0)/scores.shape[0]
             self.log("train_loss", loss)
             return loss

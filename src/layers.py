@@ -34,6 +34,7 @@ class LoraEmbedding(nn.Module):
                 or self.active_adapter not in self.lora_B:
             return self.base_layer(x)
         else:
+            # print(f'LoraEmbedding active_adapter: {self.active_adapter}, scaling:{self.scaling[self.active_adapter]}')
             result = self.base_layer(x)
             embedding_A = self.lora_A[self.active_adapter].T
             embedding_B = self.lora_B[self.active_adapter].T
@@ -74,6 +75,7 @@ class LoraLinear(nn.Module):
                 or self.active_adapter not in self.lora_B:
             return self.base_layer(x)
         else:
+            # print(f'LoraLinear active_adapter: {self.active_adapter}, scaling:{self.scaling[self.active_adapter]}')
             A = self.lora_A[self.active_adapter](x)
             B = self.lora_B[self.active_adapter](A)
             return B * self.scaling[self.active_adapter] + self.base_layer(x)
