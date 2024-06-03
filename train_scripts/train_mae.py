@@ -146,7 +146,7 @@ def create_arg_parser():
     parser.add_argument('--eval_every_steps', type=int, default=100, help='number of steps after which the model is evaluated')
     parser.add_argument('--wandb', type=str, default='mae_trainer', help='wandb project name')
     parser.add_argument('--run_name', type=str, default='mae_bi_encoder_trainer', help='run name for wandb logging')
-    parser.add_argument('--strategy', type=str, default='deepspeed_stage_2_offload', help='strategy for distributed training', choices=['deepspeed_stage_2_offload','deepspeed_stage_3_offload'])
+    parser.add_argument('--strategy', type=str, default='deepspeed_stage_2_offload', help='strategy for distributed training')
     parser.add_argument('--my_qa_mask', type=int, default=0)
 
     parser.add_argument('--train_type', type=str, default='', help='train type')
