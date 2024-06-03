@@ -524,9 +524,13 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         B,T = encoder_input_ids.size()
         h,head = self.forward(encoder_input_ids)
         enc_loss = F.cross_entropy(head.view(-1,args.vocab_size),encoder_labels.view(-1))
+        del encoder_input_ids,encoder_labels,head
+        torch.cuda.empty_cache()
         h = h.unsqueeze(1).expand(-1,T+1,-1)
         decoder_out = self.onelayer_decoder(h,decoder_input_ids)
         decoder_loss = F.cross_entropy(decoder_out.reshape(-1,args.vocab_size),decoder_labels.view(-1))
+        del decoder_input_ids, decoder_labels,decoder_out
+        torch.cuda.empty_cache()
         loss = enc_loss + decoder_loss
         self.log('train_loss', loss)
         return loss
