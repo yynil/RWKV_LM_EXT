@@ -31,6 +31,7 @@ class TrainerCallback(pl.Callback):
         super().__init__()
         self.eval_loss = []
         self.args = args
+        self.wandb_init = False
 
     def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
         args = self.args
@@ -79,7 +80,7 @@ class TrainerCallback(pl.Callback):
                 except:
                     pass
                 trainer.my_log.flush()
-                if len(args.wandb) > 0:
+                if len(args.wandb) > 0 and self.wandb_init != True:
                     print("Login to wandb...")
                     import wandb
                     wandb.init(
@@ -89,6 +90,7 @@ class TrainerCallback(pl.Callback):
                         save_code=False,
                     )
                     trainer.my_wandb = wandb
+                    self.wandb_init = True
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         args = self.args
