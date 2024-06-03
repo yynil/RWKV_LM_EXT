@@ -2,14 +2,26 @@ import torch
 import torch.nn as nn
 
 import deepspeed
-
+import math
+import gc
 import os
 import torch.nn.functional as F
 import pytorch_lightning as pl
+from pytorch_lightning.utilities import rank_zero_info, rank_zero_only
+from pytorch_lightning.strategies import DeepSpeedStrategy
 from torch import nn
 from deepspeed.ops.adam import FusedAdam,DeepSpeedCPUAdam
 from sentence_transformers.util import pairwise_cos_sim
 import traceback
+from src.model import Block
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
+MyModule = nn.Module
+def __nop(ob):
+    return ob
+MyFunction = __nop
+if os.environ["RWKV_JIT_ON"] == "1":
+    MyModule = torch.jit.ScriptModule
+    MyFunction = torch.jit.script_method
 
 def load_embedding_ckpt_and_parse_args(ckpt_file, args):
     try:
@@ -254,6 +266,344 @@ class RwkvForClassification(pl.LightningModule):
             loss = loss_fct(logits.view(-1, self.num_labels), label.view(-1))
         self.log('train_loss', loss)
         return loss
+from src.model import RWKV_Tmix_x060 as original_RWKV_Tmix_x060
+class RWKV_Tmix_x060(original_RWKV_Tmix_x060):
+    def __init__(self, args, layer_id):
+        super(RWKV_Tmix_x060, self).__init__(args, layer_id)
+
+    @MyFunction
+    def jit_func(self, x,x1):
+        B, T, C = x.size()
+
+        xx = self.time_shift(x) - x
+        xx1 = self.time_shift(x1) - x1
+        xxx = x + xx * self.time_maa_x
+        xxx = torch.tanh(xxx @ self.time_maa_w1).view(B*T, 5, -1).transpose(0, 1)
+        xxx = torch.bmm(xxx, self.time_maa_w2).view(5, B, T, -1)
+        mw, mk, mv, mr, mg = xxx.unbind(dim=0)
+
+        xw = x + xx * (self.time_maa_w + mw)
+        xk = x + xx1 * (self.time_maa_k + mk)
+        xv = x + xx1 * (self.time_maa_v + mv)
+        xr = x + xx * (self.time_maa_r + mr)
+        xg = x + xx * (self.time_maa_g + mg)
+
+        r = self.receptance(xr)
+        k = self.key(xk)
+        v = self.value(xv)
+        g = F.silu(self.gate(xg))
+
+        ww = torch.tanh(xw @ self.time_decay_w1) @ self.time_decay_w2
+        w = self.time_decay + ww
+
+        return r, k, v, g, w
+
+
+    def forward(self, x,x1):
+        B, T, C = x.size()
+        H = self.n_head
+
+        r, k, v, g, w = self.jit_func(x,x1)
+        from src.model import RUN_CUDA_RWKV6
+        x = RUN_CUDA_RWKV6(B, T, C, H, r, k, v, w, u=self.time_faaaa)
+
+        return self.jit_func_2(x, g)
+
+class OneLayerDecoder(pl.LightningModule):
+    def __init__(self,args):
+        super().__init__()
+        self.args = args
+        if not hasattr(args, 'dim_att'):
+            args.dim_att = args.n_embd
+        if not hasattr(args, 'dim_ffn'):
+            args.dim_ffn = args.n_embd * 4
+        if not hasattr(args, 'tiny_att_layer'):
+            args.tiny_att_layer = -1
+        if not hasattr(args, 'tiny_att_dim'):
+            args.tiny_att_dim = -1
+        if not hasattr(args, 'emb_id'):
+            args.emb_id = 1
+        assert args.n_embd % 32 == 0
+        assert args.dim_att % 32 == 0
+        assert args.dim_ffn % 32 == 0
+        self.emb = nn.Embedding(args.vocab_size, args.n_embd)
+        self.ln1 = nn.LayerNorm(args.n_embd)
+        self.ln2 = nn.LayerNorm(args.n_embd)
+        self.att = RWKV_Tmix_x060(args, 0)
+        from src.model import RWKV_CMix_x060
+        self.ffn = RWKV_CMix_x060(args, 0)
+        self.drop0 = nn.Dropout(p = args.dropout)
+        self.drop1 = nn.Dropout(p = args.dropout)
+        self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
+        self.ln_out = nn.LayerNorm(args.n_embd)
+    
+    def forward(self, x, x1):
+        # print(x.shape)#B,T+1,C
+        # print(x1.shape)#B,T
+        x1 = self.emb(x1)#B,T,C
+        #append the x[:,0] to x1
+        x1 = torch.cat([x[:,0].unsqueeze(1),x1],dim=1)
+        assert x1.shape == x.shape
+        x = self.drop0(x + self.att(self.ln1(x), self.ln1(x1)))
+        x = self.drop1(x + self.ffn(self.ln2(x)))
+        x = self.ln_out(x)
+        x = self.head(x)
+        return x[:,1:]
+        
+class RwkvMAEForSequenceEmbedding(pl.LightningModule):
+    def __init__(self, args):
+        super().__init__()
+        self.args = args
+        if not hasattr(args, 'dim_att') or args.dim_att == 0:
+            args.dim_att = args.n_embd
+        if not hasattr(args, 'dim_ffn') or args.dim_ffn == 0:
+            args.dim_ffn = args.n_embd * 4
+        if not hasattr(args, 'tiny_att_layer') or args.tiny_att_layer == 0:
+            args.tiny_att_layer = -1
+        if not hasattr(args, 'tiny_att_dim') or args.tiny_att_dim == 0:
+            args.tiny_att_dim = -1
+        if not hasattr(args, 'emb_id'):
+            args.emb_id = 1
+        assert args.n_embd % 32 == 0
+        assert args.dim_att % 32 == 0
+        assert args.dim_ffn % 32 == 0
+
+        self.emb = nn.Embedding(args.vocab_size, args.n_embd)
+
+        self.blocks = nn.ModuleList([Block(args, i) for i in range(args.n_layer)])
+        self.ln_out = nn.LayerNorm(args.n_embd)
+        self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
+        self.emb_id = args.emb_id
+
+        if args.head_qk > 0:
+            self.head_q = nn.Linear(args.n_embd, args.head_qk, bias=False)
+            self.head_k = nn.Linear(args.n_embd, args.head_qk, bias=False)
+            self.register_buffer("copy_mask", torch.tril(torch.ones(args.ctx_len, args.ctx_len)))
+        if args.dropout > 0:
+            self.drop0 = nn.Dropout(p = args.dropout)
+        self.onelayer_decoder = OneLayerDecoder(args)
+
+    def configure_optimizers(self):
+        args = self.args
+        
+        lr_decay = set()
+        lr_1x = set()
+        lr_2x = set()
+        lr_3x = set()
+        for n, p in self.named_parameters():
+            if not p.requires_grad:
+                continue
+            if (("_w1" in n) or ("_w2" in n)) and (args.layerwise_lr > 0):
+                lr_1x.add(n)
+            elif (("time_mix" in n) or ("time_maa" in n)) and (args.layerwise_lr > 0):
+                if args.my_pile_stage == 2:
+                    lr_2x.add(n)
+                else:
+                    lr_1x.add(n)
+            elif (("time_decay" in n) or ("time_daaaa" in n)) and (args.layerwise_lr > 0):
+                if args.my_pile_stage == 2:
+                    lr_3x.add(n)
+                else:
+                    lr_2x.add(n)
+            elif ("time_faaaa" in n) and (args.layerwise_lr > 0):
+                if args.my_pile_stage == 2:
+                    lr_2x.add(n)
+                else:
+                    lr_1x.add(n)
+            elif ("time_first" in n) and (args.layerwise_lr > 0):
+                lr_3x.add(n)
+            elif (len(p.squeeze().shape) >= 2) and (args.weight_decay > 0):
+                lr_decay.add(n)
+            else:
+                lr_1x.add(n)
+
+        lr_decay = sorted(list(lr_decay))
+        lr_1x = sorted(list(lr_1x))
+        lr_2x = sorted(list(lr_2x))
+        lr_3x = sorted(list(lr_3x))
+        # print('decay', lr_decay)
+        # print('1x', lr_1x)
+        # print('2x', lr_2x)
+        # print('3x', lr_3x)
+        param_dict = {n: p for n, p in self.named_parameters()}
+        
+        if args.layerwise_lr > 0:
+            if args.my_pile_stage == 2:
+                optim_groups = [
+                    {"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0},
+                    {"params": [param_dict[n] for n in lr_2x], "weight_decay": 0.0, "my_lr_scale": 5.0},# test: 2e-3 / args.lr_init},
+                    {"params": [param_dict[n] for n in lr_3x], "weight_decay": 0.0, "my_lr_scale": 5.0},# test: 3e-3 / args.lr_init},
+                ]
+            else:
+                optim_groups = [
+                    {"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0},
+                    {"params": [param_dict[n] for n in lr_2x], "weight_decay": 0.0, "my_lr_scale": 2.0},
+                    {"params": [param_dict[n] for n in lr_3x], "weight_decay": 0.0, "my_lr_scale": 3.0},
+                ]
+        else:
+            optim_groups = [{"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0}]
+
+        if args.weight_decay > 0:
+            optim_groups += [{"params": [param_dict[n] for n in lr_decay], "weight_decay": args.weight_decay, "my_lr_scale": 1.0}]
+            if self.deepspeed_offload:
+                return DeepSpeedCPUAdam(optim_groups, lr=self.args.lr_init, betas=self.args.betas, eps=self.args.adam_eps, bias_correction=True, adamw_mode=True, amsgrad=False)
+            return FusedAdam(optim_groups, lr=self.args.lr_init, betas=self.args.betas, eps=self.args.adam_eps, bias_correction=True, adam_w_mode=True, amsgrad=False)
+        else:
+            if self.deepspeed_offload:
+                return DeepSpeedCPUAdam(optim_groups, lr=self.args.lr_init, betas=self.args.betas, eps=self.args.adam_eps, bias_correction=True, adamw_mode=False, weight_decay=0, amsgrad=False)
+            return FusedAdam(optim_groups, lr=self.args.lr_init, betas=self.args.betas, eps=self.args.adam_eps, bias_correction=True, adam_w_mode=False, weight_decay=0, amsgrad=False)
+        # return ZeroOneAdam(optim_groups, lr=self.args.lr_init, betas=self.args.betas, eps=self.args.adam_eps, bias_correction=True, weight_decay=0, amsgrad=False, cuda_aware=False)
+
+    @property
+    def deepspeed_offload(self) -> bool:
+        strategy = self.trainer.strategy
+        if isinstance(strategy, DeepSpeedStrategy):
+            cfg = strategy.config["zero_optimization"]
+            return cfg.get("offload_optimizer") or cfg.get("offload_param")
+        return False
+
+    def forward(self, idx):
+        args = self.args
+        B, T = idx.size()
+        assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
+
+        x = self.emb(idx)
+        x_emb = x
+
+        if args.dropout > 0:
+            x = self.drop0(x)
+        if args.tiny_att_dim > 0:
+            for block in self.blocks:
+                if args.grad_cp == 1:
+                    if args.lora or args.state_tune or args.train_type == 'state':
+                        x = torch_checkpoint(block, x, x_emb, use_reentrant=False)
+                    else:
+                        x = deepspeed.checkpointing.checkpoint(block, x, x_emb)
+                else:
+                    x = block(x, x_emb)
+        else:
+            for block in self.blocks:
+                if args.grad_cp == 1:
+                    if args.lora or args.state_tune or args.train_type == 'state':
+                        x = torch_checkpoint(block, x, x_emb ,use_reentrant=False)
+                    else:
+                        x = deepspeed.checkpointing.checkpoint(block, x)
+                else:
+                    x = block(x)
+
+        x = self.ln_out(x)
+        #actual len is the first self.emb_id
+        idx_actual_len = torch.eq(idx, self.emb_id).int().argmax(-1)
+        #get the last token embedding
+        seq_emb = x[torch.arange(x.size(0)), idx_actual_len]
+        #add the last token embeddings to the x[:,:idx_actual_len-1]
+        x = x + seq_emb.unsqueeze(1).expand(-1,T,-1)
+
+        if args.head_qk > 0:
+            q = self.head_q(x)[:, :T, :]
+            k = self.head_k(x)[:, :T, :]
+            c = (q @ k.transpose(-2, -1)) * (1.0 / args.head_qk)
+            c = c.masked_fill(self.copy_mask[:T, :T] == 0, 0)
+
+            if "32" in os.environ["RWKV_FLOAT_MODE"]:
+                c = c @ F.one_hot(idx, num_classes=args.vocab_size)
+            elif os.environ["RWKV_FLOAT_MODE"] == "fp16":
+                c = c @ F.one_hot(idx, num_classes=args.vocab_size).half()
+            elif os.environ["RWKV_FLOAT_MODE"] == "bf16":
+                c = c @ F.one_hot(idx, num_classes=args.vocab_size).bfloat16()
+
+            x = self.head(x) + c
+        else:
+            x = self.head(x)
+        #x is used to caclculate the MLM loss
+        return seq_emb, x
+
+    def training_step(self, batch, batch_idx):
+        args = self.args
+        encoder_input_ids,encoder_labels,decoder_input_ids,decoder_labels = batch['encoder_input_ids'],batch['encoder_labels'],batch['decoder_input_ids'],batch['decoder_labels']
+        B,T = encoder_input_ids.size()
+        h,head = self.forward(encoder_input_ids)
+        enc_loss = F.cross_entropy(head.view(-1,args.vocab_size),encoder_labels.view(-1))
+        h = h.unsqueeze(1).expand(-1,T+1,-1)
+        decoder_out = self.onelayer_decoder(h,decoder_input_ids)
+        decoder_loss = F.cross_entropy(decoder_out.reshape(-1,args.vocab_size),decoder_labels.view(-1))
+        loss = enc_loss + decoder_loss
+        self.log('train_loss', loss)
+        return loss
+    def training_step_end(self, batch_parts):
+        if pl.__version__[0]!='2':
+            all = self.all_gather(batch_parts)
+            if self.trainer.is_global_zero:
+                self.trainer.my_loss_all = all
+
+    def generate_init_weight(self):
+        print(
+            f"""
+############################################################################
+#
+# Init model weight (slow for large models)...
+#
+############################################################################
+"""
+        )
+        m = {}
+        for n in self.state_dict():
+            p = self.state_dict()[n]
+            shape = p.shape
+
+            gain = 1.0
+            scale = 1.0
+            if "ln_" in n or ".ln" in n or "time_" in n or "_mask" in n or "pos_emb" in n or '.mask.' in n:
+                if 'ln_x.weight' in n:
+                    layer_scale = (1+int(n.split('.')[1])) / self.args.n_layer
+                    m[n] = (p * 0.0) + (layer_scale ** 0.7)
+                else:
+                    m[n] = p
+            else:
+                if n == "emb.weight":
+                    scale = -1 * self.args.lr_init
+                else:
+                    if shape[0] > shape[1]:
+                        gain = math.sqrt(shape[0] / shape[1])
+
+                    zero = [".att.output.", ".ffn.value.", ".ffn.receptance.", ".ffnPre.value.", ".ffnPre.receptance.", "head_q.", '.oo.', '.rr.']
+
+                    for kk in zero:
+                        if kk in n:
+                            scale = 0
+                    if n == "head.weight":
+                        scale = 0.5
+                    if "head_k." in n:
+                        scale = 0.1
+                    if "head_q." in n:
+                        scale = 0
+
+                print(f"{str(shape[0]).ljust(5)} {str(shape[1]).ljust(5)} {str(scale).ljust(4)} {n}")
+
+                if self.args.accelerator.upper() == "GPU":
+                    m[n] = torch.empty((shape[0], shape[1]), device="cuda")
+                else:
+                    m[n] = torch.empty((shape[0], shape[1]))
+
+                if scale == 0:
+                    nn.init.zeros_(m[n])
+                elif scale < 0:
+                    nn.init.uniform_(m[n], a=scale, b=-scale)
+                else:
+                    nn.init.orthogonal_(m[n], gain=gain * scale)
+
+            m[n] = m[n].cpu()
+            if os.environ["RWKV_FLOAT_MODE"] == "fp16":
+                m[n] = m[n].half()
+            elif os.environ["RWKV_FLOAT_MODE"] == "bf16":
+                m[n] = m[n].bfloat16()
+
+            # if n == "emb.weight":
+            #     print(m[n])
+
+        gc.collect()
+        torch.cuda.empty_cache()
+        return m
 
 
 class RwkvForSequenceEmbedding(pl.LightningModule):

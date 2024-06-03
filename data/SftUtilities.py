@@ -114,7 +114,7 @@ if __name__ == '__main__':
     tokenizer = TRIE_TOKENIZER(args.tokenizer_file)
     print(tokenizer)
     for file in os.listdir(args.input_dir):
-        if file.endswith('.json'):
+        if file.endswith('.json') or file.endswith('.jsonl'):
             input_jsonl = os.path.join(args.input_dir, file)
             output_sft = os.path.join(args.output_dir, file.replace('.json', '_dataset_'))
             create_variable_sized_sft_from_jsonl(input_jsonl, output_sft, args.tokenizer_file)

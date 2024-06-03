@@ -238,6 +238,8 @@ class RWKV_Tmix_x060(MyModule):
             self.time_maa_g = nn.Parameter(1.0 - torch.pow(ddd, 0.5 * ratio_1_to_almost0))
 
             TIME_MIX_EXTRA_DIM = 32 # generate TIME_MIX for w,k,v,r,g
+            if args.n_embd==4096:
+                TIME_MIX_EXTRA_DIM = TIME_MIX_EXTRA_DIM*2
             self.time_maa_w1 = nn.Parameter(torch.zeros(args.n_embd, TIME_MIX_EXTRA_DIM*5).uniform_(-1e-4, 1e-4))
             self.time_maa_w2 = nn.Parameter(torch.zeros(5, TIME_MIX_EXTRA_DIM, args.n_embd).uniform_(-1e-4, 1e-4))
 
@@ -248,6 +250,8 @@ class RWKV_Tmix_x060(MyModule):
             self.time_decay = nn.Parameter(decay_speed.reshape(1,1,args.dim_att))
 
             TIME_DECAY_EXTRA_DIM = 64
+            if args.n_embd==4096:
+                TIME_DECAY_EXTRA_DIM = TIME_DECAY_EXTRA_DIM*2
             self.time_decay_w1 = nn.Parameter(torch.zeros(args.n_embd, TIME_DECAY_EXTRA_DIM).uniform_(-1e-4, 1e-4))
             self.time_decay_w2 = nn.Parameter(torch.zeros(TIME_DECAY_EXTRA_DIM, args.dim_att).uniform_(-1e-4, 1e-4))
 
@@ -1439,6 +1443,7 @@ if __name__ == '__main__':
     print(out)
     out = fusedEncoder.cross_encode_texts(texts[2],texts[3])
     print(out)
+    print(args)
 if __name__ == '__main__1':
     torch.backends.cudnn.benchmark = True
     ckpt = '/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
@@ -1450,7 +1455,6 @@ if __name__ == '__main__1':
     model = RWKV(args)
     info = model.load_state_dict(w)
     model.eval()
-    print(model)
     print(info)
 
     gen_args = PIPELINE_ARGS(temperature = 1.0, top_p = 0.8, top_k = 100, # top_k = 0 then ignore
@@ -1497,7 +1501,6 @@ if __name__ == '__main__1':
     cross_lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/cross-encoder/epoch_0_step_500000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
     cross_encoder = CrossEncoder(model,cross_lora_path,tokenizer,dtype=dtype,lora_type='lora',lora_r=8,lora_alpha=32,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],adapter_name='cross_encoder_lora',original_adapter_name='embedding_lora',sep_token_id = 2)
     print(cross_encoder)
-    print(model)
     out  = cross_encoder.encode_texts(texts[0],texts[1])
     print(out)
 
@@ -1532,3 +1535,4 @@ if __name__ == '__main__1':
 
     out = cross_encoder.encode_texts(texts[0],output)
     print(out)
+    print(args)
