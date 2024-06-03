@@ -25,29 +25,26 @@ def mae_collator(examples,
     tgt_len = max_seq_length - 1
     for example in examples:
         token_ids = example['token_ids']
-        idx = 0
-        while idx < len(token_ids):
-            encoder_input_ids = token_ids[idx:idx+tgt_len]
-            encoder_input_ids.append(emb_id)
+        encoder_input_ids = token_ids[:tgt_len]
+        encoder_input_ids.append(emb_id)
             
-            padding_size = max_seq_length - len(encoder_input_ids)
-            mask = whole_word_mask(encoder_input_ids[:-1], encoder_mlm_probability)
+        padding_size = max_seq_length - len(encoder_input_ids)
+        mask = whole_word_mask(encoder_input_ids[:-1], encoder_mlm_probability)
 
-            encoder_labels = deepcopy(encoder_input_ids)
-            decoder_labels = deepcopy(encoder_input_ids)
-            decoder_input_ids = deepcopy(encoder_input_ids)
-            for i, m in enumerate(mask):
-                if m == 1:
-                    encoder_input_ids[i] = mask_id
-                else:
-                    encoder_labels[i] = -100
-            encoder_labels[-1] = -100
-            decoder_labels[-1] = -100
-            batch['encoder_input_ids'].append(encoder_input_ids if padding_size == 0 else encoder_input_ids + [0]*padding_size)
-            batch['encoder_labels'].append(encoder_labels if padding_size == 0 else encoder_labels + [-100]*padding_size)
-            batch['decoder_input_ids'].append(decoder_input_ids if padding_size == 0 else decoder_input_ids + [0]*padding_size)
-            batch['decoder_labels'].append(decoder_labels if padding_size == 0 else decoder_labels + [-100]*padding_size)
-            idx += tgt_len
+        encoder_labels = deepcopy(encoder_input_ids)
+        decoder_labels = deepcopy(encoder_input_ids)
+        decoder_input_ids = deepcopy(encoder_input_ids)
+        for i, m in enumerate(mask):
+            if m == 1:
+                encoder_input_ids[i] = mask_id
+            else:
+                encoder_labels[i] = -100
+        encoder_labels[-1] = -100
+        decoder_labels[-1] = -100
+        batch['encoder_input_ids'].append(encoder_input_ids if padding_size == 0 else encoder_input_ids + [0]*padding_size)
+        batch['encoder_labels'].append(encoder_labels if padding_size == 0 else encoder_labels + [-100]*padding_size)
+        batch['decoder_input_ids'].append(decoder_input_ids if padding_size == 0 else decoder_input_ids + [0]*padding_size)
+        batch['decoder_labels'].append(decoder_labels if padding_size == 0 else decoder_labels + [-100]*padding_size)
     batch['encoder_input_ids'] = torch.tensor(batch['encoder_input_ids'],dtype=torch.long)
     batch['encoder_labels'] = torch.tensor(batch['encoder_labels'],dtype=torch.long)
     batch['decoder_input_ids'] = torch.tensor(batch['decoder_input_ids'],dtype=torch.long)
