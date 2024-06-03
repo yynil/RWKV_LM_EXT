@@ -177,7 +177,7 @@ if __name__ == '__main__':
     print(colorama.Fore.RED + f'loading data from {args.train_data}')
     from datasets import load_from_disk
     dataset = load_from_disk(args.train_data)
-    train_dataloader = DataLoader(dataset, batch_size=args.micro_bsz, collate_fn=partial(mae_collator, max_seq_length=args.max_seq_length, encoder_mlm_probability=0.3))
+    train_dataloader = DataLoader(dataset,num_workers=8,pin_memory=True, batch_size=args.micro_bsz, collate_fn=partial(mae_collator, max_seq_length=args.max_seq_length, encoder_mlm_probability=0.3))
 
     args.epoch_steps = len(train_dataloader)//args.num_devices
     
