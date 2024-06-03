@@ -91,6 +91,7 @@ from torch.utils.data import DataLoader
 def create_arg_parser():
     import argparse
     parser = argparse.ArgumentParser(description='MAE trainer')
+    parser.add_argument('--model_file', type=str,default='RWKV-x060-MAE-ctx4096.pth', help='Model file name to save')
     parser.add_argument('--train_data', type=str,help='parquet dicrectory containing the training data')
     parser.add_argument('--output_dir', type=str, default='/media/yueyulin/bigdata/tmp',help='directory to save the trained model')
     parser.add_argument('--num_epochs', type=int, default=150, help='number of epochs to train the model')
@@ -143,8 +144,8 @@ def create_arg_parser():
     parser.add_argument('--weight_decay_final', type=float, default=-1, help='final weight decay in the model')
     parser.add_argument('--proj_dir', type=str, help='project directory to save the model and logs')
     parser.add_argument('--eval_every_steps', type=int, default=100, help='number of steps after which the model is evaluated')
-    parser.add_argument('--wandb', type=str, default='peft', help='wandb project name')
-    parser.add_argument('--run_name', type=str, default='peft_bi_encoder_trainer', help='run name for wandb logging')
+    parser.add_argument('--wandb', type=str, default='mae_trainer', help='wandb project name')
+    parser.add_argument('--run_name', type=str, default='mae_bi_encoder_trainer', help='run name for wandb logging')
     parser.add_argument('--strategy', type=str, default='deepspeed_stage_2_offload', help='strategy for distributed training', choices=['deepspeed_stage_2_offload','deepspeed_stage_3_offload'])
     parser.add_argument('--my_qa_mask', type=int, default=0)
 
@@ -205,7 +206,9 @@ if __name__ == '__main__':
                       use_distributed_sampler=False)
 
     
+    print(model)
     print("Current device rank: ", trainer.global_rank)
     print("Total number of devices: ", trainer.world_size)
+    
     trainer.fit(model, 
                 train_dataloader)
