@@ -95,11 +95,6 @@ class TrainerCallback(pl.Callback):
         token_per_step = args.ctx_len * args.real_bsz
         real_step = trainer.global_step + args.epoch_begin * args.epoch_steps
         if trainer.is_global_zero and batch_idx > args.skip_steps:  # logging   
-            if real_step % args.log_every_n_steps == 0:
-                print(f'saving trainable to {args.trainable_dir_output}')
-                print(f"{real_step} {trainer.my_loss:.6f} {math.exp(trainer.my_loss):.4f}  {trainer.current_epoch}, now saving...")
-                output_dir = f"{args.trainable_dir_output}/epoch_{trainer.current_epoch}_step_{real_step}"
-                save_trainable_parameters(pl_module, output_dir, args.model_file)
             t_now = time.time_ns()
             kt_s = 0
             try:
@@ -109,11 +104,11 @@ class TrainerCallback(pl.Callback):
                 self.log("Kt/s", kt_s, prog_bar=True, on_step=True)
             except:
                 pass
-            trainer.my_time_ns = t_now
             if pl.__version__[0]=='2':
                 trainer.my_loss = outputs["loss"]
             else:
                 trainer.my_loss = trainer.my_loss_all.float().mean().item()
+            trainer.my_time_ns = t_now
             trainer.my_loss_sum += trainer.my_loss
             trainer.my_loss_count += 1
             trainer.my_epoch_loss = trainer.my_loss_sum / trainer.my_loss_count
@@ -125,6 +120,12 @@ class TrainerCallback(pl.Callback):
                 if kt_s > 0:
                     lll["kt/s"] = kt_s
                 trainer.my_wandb.log(lll, step=int(real_step))
+            
+            if real_step % args.log_every_n_steps == 0:
+                print(f'saving trainable to {args.trainable_dir_output}')
+                print(f"{real_step} {trainer.my_loss:.6f} {math.exp(trainer.my_loss):.4f}  {trainer.current_epoch}, now saving...")
+                output_dir = f"{args.trainable_dir_output}/epoch_{trainer.current_epoch}_step_{real_step}"
+                save_trainable_parameters(pl_module, output_dir, args.model_file)
                 
 
     def on_train_epoch_start(self, trainer, pl_module):
