@@ -475,19 +475,13 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         if args.tiny_att_dim > 0:
             for block in self.blocks:
                 if args.grad_cp == 1:
-                    if args.lora or args.state_tune or args.train_type == 'state':
-                        x = torch_checkpoint(block, x, x_emb, use_reentrant=False)
-                    else:
-                        x = deepspeed.checkpointing.checkpoint(block, x, x_emb)
+                    x = deepspeed.checkpointing.checkpoint(block, x, x_emb)
                 else:
                     x = block(x, x_emb)
         else:
             for block in self.blocks:
                 if args.grad_cp == 1:
-                    if args.lora or args.state_tune or args.train_type == 'state':
-                        x = torch_checkpoint(block, x, x_emb ,use_reentrant=False)
-                    else:
-                        x = deepspeed.checkpointing.checkpoint(block, x)
+                    x = deepspeed.checkpointing.checkpoint(block, x)
                 else:
                     x = block(x)
 
