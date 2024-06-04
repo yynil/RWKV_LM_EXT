@@ -112,7 +112,8 @@ def create_arg_parser():
     parser.add_argument("--tiny_att_dim", default=0, type=int)  # tiny attention dim
     parser.add_argument("--tiny_att_layer", default=-999, type=int)  # tiny attention @ which layer
     parser.add_argument("--vocab_size", default=65536, type=int)
-    
+    parser.add_argument('--bi_rwkv',action='store_true')
+
     parser.add_argument('--dropout', type=float, default=0, help='dropout rate in the model')
     parser.add_argument('--grad_cp', type=int, default=0, help='gradient checkpoint in the model')
     parser.add_argument('--save_per_batches', type=int, default=10000, help='number of batches to save the model')
