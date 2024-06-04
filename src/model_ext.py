@@ -267,9 +267,9 @@ class RwkvForClassification(pl.LightningModule):
         self.log('train_loss', loss)
         return loss
 from src.model import RWKV_Tmix_x060 as original_RWKV_Tmix_x060
-class RWKV_Tmix_x060(original_RWKV_Tmix_x060):
+class RWKV_Tmix_x060_Aggressive(original_RWKV_Tmix_x060):
     def __init__(self, args, layer_id):
-        super(RWKV_Tmix_x060, self).__init__(args, layer_id)
+        super(RWKV_Tmix_x060_Aggressive, self).__init__(args, layer_id)
 
     @MyFunction
     def jit_func(self, x,x1):
@@ -329,7 +329,7 @@ class OneLayerDecoder(pl.LightningModule):
         self.emb = nn.Embedding(args.vocab_size, args.n_embd)
         self.ln1 = nn.LayerNorm(args.n_embd)
         self.ln2 = nn.LayerNorm(args.n_embd)
-        self.att = RWKV_Tmix_x060(args, 0)
+        self.att = RWKV_Tmix_x060_Aggressive(args, 0)
         from src.model import RWKV_CMix_x060
         self.ffn = RWKV_CMix_x060(args, 0)
         self.drop0 = nn.Dropout(p = args.dropout)
@@ -349,7 +349,48 @@ class OneLayerDecoder(pl.LightningModule):
         x = self.ln_out(x)
         x = self.head(x[:,1:])
         return x
-        
+def create_mask(x,emb_id=1):
+    mask = torch.ones(x.size(0),x.size(1)).to(x.device)
+    mask[x == 0] = 0
+    mask[x == emb_id] = 0
+    return mask.to(torch.long)
+
+def reverse_x_idx(mask,max_len):
+    idx_actual_len = torch.sum(mask,dim=1)
+    rev_idx = []
+    for i in idx_actual_len:
+        reverse_idx = torch.cat([torch.arange(0,i).flip(0),torch.arange(i,max_len)],dim=0)
+        rev_idx.append(reverse_idx)
+    rev_idx = torch.stack(rev_idx)
+    return rev_idx.to(torch.long)
+def reverse_x(x,rev_idx):
+    return torch.gather(x,1,rev_idx.to(x.device).unsqueeze(-1).expand(-1,-1,x.size(-1)))
+
+def bi_att_forward(self,x,rev_idx):
+    B,T,C = x.size()
+    H = self.n_head
+    r,k,v,g,w = self.jit_func(x)
+    rev_x = reverse_x(x,rev_idx)
+    rev_r,rev_k,rev_v,rev_g,rev_w = self.jit_func(rev_x)
+    from src.model import RUN_CUDA_RWKV6
+    x = RUN_CUDA_RWKV6(B, T, C, H, r, k, v, w, u=self.time_faaaa)
+    rev_x = RUN_CUDA_RWKV6(B, T, C, H, rev_r, rev_k, rev_v, rev_w, u=self.time_faaaa)
+    x = self.jit_func_2(x, g)
+    rev_x = self.jit_func_2(rev_x, rev_g)
+    return x+reverse_x(rev_x,rev_idx)
+
+def bi_block_forward(self,x,rev_idx):
+    args = self.args
+    if self.layer_id == 0:
+        x = self.ln0(x)
+    if self.layer_id == 0 and args.pre_ffn > 0:
+        x = self.drop0(x + self.pre_ffn(self.ln1(x)))
+    else:
+        x = self.drop0(x+self.att(self.ln1(x),rev_idx))
+    x = self.drop1(x+self.ffn(self.ln2(x)))
+    return x
+
+
 class RwkvMAEForSequenceEmbedding(pl.LightningModule):
     def __init__(self, args):
         super().__init__()
@@ -364,12 +405,17 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
             args.tiny_att_dim = -1
         if not hasattr(args, 'emb_id'):
             args.emb_id = 1
+        if not hasattr(args, 'bi_rwkv'):
+            args.bi_rwkv = False
         assert args.n_embd % 32 == 0
         assert args.dim_att % 32 == 0
         assert args.dim_ffn % 32 == 0
 
         self.emb = nn.Embedding(args.vocab_size, args.n_embd)
-
+        if args.bi_rwkv:
+            Block.forward = bi_block_forward
+            from src.model import RWKV_Tmix_x060
+            RWKV_Tmix_x060.forward = bi_att_forward
         self.blocks = nn.ModuleList([Block(args, i) for i in range(args.n_layer)])
         self.ln_out = nn.LayerNorm(args.n_embd)
         self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
@@ -379,8 +425,7 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
             self.head_q = nn.Linear(args.n_embd, args.head_qk, bias=False)
             self.head_k = nn.Linear(args.n_embd, args.head_qk, bias=False)
             self.register_buffer("copy_mask", torch.tril(torch.ones(args.ctx_len, args.ctx_len)))
-        if args.dropout > 0:
-            self.drop0 = nn.Dropout(p = args.dropout)
+        self.drop0 = nn.Dropout(p = args.dropout)
         self.onelayer_decoder = OneLayerDecoder(args)
 
     def configure_optimizers(self):
@@ -466,22 +511,22 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         args = self.args
         B, T = idx.size()
         assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
-
+        if args.bi_rwkv:
+            mask = create_mask(idx,emb_id=args.emb_id)
+            rev_idx = reverse_x_idx(mask,T)
         x = self.emb(idx)
         x_emb = x
 
-        if args.dropout > 0:
-            x = self.drop0(x)
-        if args.tiny_att_dim > 0:
-            for block in self.blocks:
-                if args.grad_cp == 1:
-                    x = deepspeed.checkpointing.checkpoint(block, x, x_emb)
+        x = self.drop0(x)
+        for block in self.blocks:
+            if args.grad_cp == 1:
+                if args.bi_rwkv:
+                    x = deepspeed.checkpointing.checkpoint(block, x, rev_idx)
                 else:
-                    x = block(x, x_emb)
-        else:
-            for block in self.blocks:
-                if args.grad_cp == 1:
                     x = deepspeed.checkpointing.checkpoint(block, x)
+            else:
+                if args.bi_rwkv:
+                    x = block(x,rev_idx)
                 else:
                     x = block(x)
 
@@ -491,7 +536,8 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         #get the last token embedding
         seq_emb = x[torch.arange(x.size(0)), idx_actual_len]
         #add the last token embeddings to the x[:,:idx_actual_len-1]
-        x = x + seq_emb.unsqueeze(1).expand(-1,T,-1)
+        if not args.bi_rwkv:
+            x = x + seq_emb.unsqueeze(1).expand(-1,T,-1)
 
         if args.head_qk > 0:
             q = self.head_q(x)[:, :T, :]

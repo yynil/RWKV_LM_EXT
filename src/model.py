@@ -962,9 +962,8 @@ class Block(nn.Module):
             self.tiny_v = nn.Linear(args.n_embd, args.n_embd, bias=False)
             self.register_buffer("tiny_mask", torch.tril(torch.ones(args.ctx_len, args.ctx_len)))
 
-        if args.dropout > 0:
-            self.drop0 = nn.Dropout(p = args.dropout)
-            self.drop1 = nn.Dropout(p = args.dropout)
+        self.drop0 = nn.Dropout(p = args.dropout)
+        self.drop1 = nn.Dropout(p = args.dropout)
 
     if os.environ["RWKV_TRAIN_TYPE"] == 'infctx':
         def forward(self, x, last_state: BlockState, x_emb=None):
