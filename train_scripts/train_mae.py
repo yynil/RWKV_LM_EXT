@@ -85,7 +85,7 @@ os.environ['RWKV_CTXLEN'] = '4096'
 
 from peft_train.Callbacks import TrainerCallback
 from src.model_ext import RwkvMAEForSequenceEmbedding
-from data.mae_dataset import mae_collator
+from data.mae_dataset import mae_collator,dup_mae_collator
 import torch
 from torch.utils.data import DataLoader
 def create_arg_parser():
@@ -113,6 +113,7 @@ def create_arg_parser():
     parser.add_argument("--tiny_att_layer", default=-999, type=int)  # tiny attention @ which layer
     parser.add_argument("--vocab_size", default=65536, type=int)
     parser.add_argument('--bi_rwkv',action='store_true')
+    parser.add_argument('--dup_mae',action='store_true')
 
     parser.add_argument('--dropout', type=float, default=0, help='dropout rate in the model')
     parser.add_argument('--grad_cp', type=int, default=0, help='gradient checkpoint in the model')
@@ -178,7 +179,17 @@ if __name__ == '__main__':
     print(colorama.Fore.RED + f'loading data from {args.train_data}')
     from datasets import load_from_disk
     dataset = load_from_disk(args.train_data)
-    train_dataloader = DataLoader(dataset,num_workers=8,pin_memory=True, batch_size=args.micro_bsz, collate_fn=partial(mae_collator, max_seq_length=args.max_seq_length, encoder_mlm_probability=0.3))
+    collate_fn = \
+        partial(mae_collator, max_seq_length=args.max_seq_length, encoder_mlm_probability=0.3) \
+            if not args.dup_mae \
+            else \
+        partial(dup_mae_collator, max_seq_length=args.max_seq_length, encoder_mlm_probability=0.3,vocab_size=args.vocab_size)
+    train_dataloader = DataLoader(dataset,
+                                  num_workers=8,
+                                  pin_memory=True, 
+                                  batch_size=args.micro_bsz, 
+                                  collate_fn=collate_fn
+                                  )
 
     args.epoch_steps = len(train_dataloader)//args.num_devices
     

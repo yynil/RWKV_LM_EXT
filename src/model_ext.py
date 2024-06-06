@@ -507,7 +507,17 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
             cfg = strategy.config["zero_optimization"]
             return cfg.get("offload_optimizer") or cfg.get("offload_param")
         return False
+    
+    def ot_embedding(self, logits, attention_mask):
+        mask = (1 - attention_mask.unsqueeze(-1)) * -1000
+        reps, _ = torch.max(logits + mask, dim=1)  # B V
+        return reps
 
+    def decoder_ot_loss(self, ot_embedding, bag_word_weight):
+        input = F.log_softmax(ot_embedding, dim=-1)
+        bow_loss = torch.mean(-torch.sum(bag_word_weight * input, dim=1))
+        return bow_loss
+    
     def forward(self, idx):
         args = self.args
         B, T = idx.size()
@@ -557,13 +567,13 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         else:
             x = self.head(x)
         #x is used to caclculate the MLM loss
-        return seq_emb, x
+        return seq_emb, x,mask
 
     def training_step(self, batch, batch_idx):
         args = self.args
         encoder_input_ids,encoder_labels,decoder_input_ids,decoder_labels = batch['encoder_input_ids'],batch['encoder_labels'],batch['decoder_input_ids'],batch['decoder_labels']
         B,T = encoder_input_ids.size()
-        h,head = self.forward(encoder_input_ids)
+        h,head,mask = self.forward(encoder_input_ids)
         enc_loss = F.cross_entropy(head.view(-1,args.vocab_size),encoder_labels.view(-1))
         del encoder_input_ids,encoder_labels,head
         torch.cuda.empty_cache()
@@ -572,6 +582,11 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         decoder_loss = F.cross_entropy(decoder_out.view(-1,args.vocab_size),decoder_labels.view(-1))
         del decoder_input_ids, decoder_labels,decoder_out
         torch.cuda.empty_cache()
+        if args.dup_mae:
+            ot_embedding = self.ot_embedding(head, mask)
+            bag_word_weight = batch['bag_word_weight']
+            ot_loss = self.decoder_ot_loss(ot_embedding, bag_word_weight)
+            loss = enc_loss + decoder_loss + ot_loss
         loss = enc_loss + decoder_loss
         self.log('train_loss', loss)
         return loss
