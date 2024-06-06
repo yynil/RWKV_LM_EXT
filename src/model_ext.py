@@ -310,7 +310,7 @@ class RWKV_Tmix_x060_Aggressive(original_RWKV_Tmix_x060):
         return self.jit_func_2(x, g)
 
 class OneLayerDecoder(pl.LightningModule):
-    def __init__(self,args):
+    def __init__(self,args,emb):
         super().__init__()
         self.args = args
         if not hasattr(args, 'dim_att'):
@@ -326,7 +326,8 @@ class OneLayerDecoder(pl.LightningModule):
         assert args.n_embd % 32 == 0
         assert args.dim_att % 32 == 0
         assert args.dim_ffn % 32 == 0
-        self.emb = nn.Embedding(args.vocab_size, args.n_embd)
+        # self.emb = nn.Embedding(args.vocab_size, args.n_embd)
+        self.emb = emb
         self.ln1 = nn.LayerNorm(args.n_embd)
         self.ln2 = nn.LayerNorm(args.n_embd)
         self.att = RWKV_Tmix_x060_Aggressive(args, 0)
@@ -426,7 +427,7 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
             self.head_k = nn.Linear(args.n_embd, args.head_qk, bias=False)
             self.register_buffer("copy_mask", torch.tril(torch.ones(args.ctx_len, args.ctx_len)))
         self.drop0 = nn.Dropout(p = args.dropout)
-        self.onelayer_decoder = OneLayerDecoder(args)
+        self.onelayer_decoder = OneLayerDecoder(args,self.emb)
 
     def configure_optimizers(self):
         args = self.args
