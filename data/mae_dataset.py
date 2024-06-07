@@ -48,6 +48,8 @@ def dup_mae_collator(examples,
         decoder_labels = deepcopy(encoder_input_ids)
         decoder_input_ids = deepcopy(encoder_input_ids)
         for i, m in enumerate(mask):
+            if i >= tgt_len:
+                break#in case for some extem cases
             if m == 1:
                 encoder_input_ids[i] = mask_id
             else:
