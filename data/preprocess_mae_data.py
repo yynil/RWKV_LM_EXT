@@ -4,7 +4,9 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_dir)
 print(f'appended {parent_dir} to sys.path')
 import glob
-os.environ['HF_DATASETS_CACHE'] = '/media/yueyulin/plugable/cache'
+import os
+os.environ['HF_DATASETS_CACHE'] = '/media/yueyulin/data_4t/cache'
+os.environ['HF_ENDPOINT']='https://hf-mirror.com'
 import datasets
 import random
 import functools
@@ -80,12 +82,76 @@ def create_cci2_dataset(cci2_dir,
     ds = datasets.load_dataset('parquet', data_files=parquet_files)['train']
     print(f'Loaded dataset with {len(ds)} samples')
     print('seg sentence')
-    cci2 = ds.map(sentence_cci2, num_proc=8, remove_columns=["content","id"])
+    cci2 = ds.map(sentence_cci2, num_proc=4, remove_columns=["content","id"])
     print('tokenize and seg words')
-    tokenized_cci2 = cci2.map(cci2_tokenize_function, num_proc=8, batched=True, remove_columns=["sentences"])
+    tokenized_cci2 = cci2.map(cci2_tokenize_function, num_proc=1, batched=True, remove_columns=["sentences"])
     print('group lines')
-    processed_cci2 = tokenized_cci2.map(cci2_pad_each_line, num_proc=16, batched=True, remove_columns=tokenized_cci2.column_names)
+    processed_cci2 = tokenized_cci2.map(cci2_pad_each_line, num_proc=4, batched=True, remove_columns=tokenized_cci2.column_names)
     return processed_cci2
+
+def create_wiki_zh_dataset(wiki_dir,
+                         tokenizer_file,
+                         max_seq_length: int,
+                         short_seq_prob: float = 0.0):
+    parquet_files = glob.glob(os.path.join(wiki_dir, '*.arrow'))
+    print(f'Found {len(parquet_files)} arrow files in {wiki_dir}')
+    ds = datasets.load_dataset('arrow', data_files=parquet_files)['train']
+    print(f'Loaded dataset with {len(ds)} samples')
+
+
+    target_length = max_seq_length - 1
+    def wiki_tokenize_function(examples):
+        sentences = []
+        segments = []
+        for sents in examples['sentences']:
+            current_seg = []
+            current_sents = []
+            for sent in sents:
+                input_ids, segment_ids, _ = tokenize_chinese(sent,tokenizer_file)
+                current_sents.append(input_ids)
+                current_seg.append(segment_ids)
+            sentences.append(current_sents)
+            segments.append(current_seg)
+        return {"input_ids": sentences, "segment_ids": segments}
+
+    def sentence_wiki(examples):
+        global ht
+        if ht is None:
+            from harvesttext import HarvestText
+            ht = HarvestText()
+        sentences = ht.cut_sentences(examples["text"])
+        return {"sentences": sentences}
+
+    def wiki_pad_each_line(examples):
+        blocks = []
+        all_segements = []
+        for sents,segments in zip(examples['input_ids'],examples['segment_ids']):
+            curr_block = []
+            current_seg = []
+            curr_tgt_len = target_length if random.random() > short_seq_prob else random.randint(3, target_length)
+            for sent,seg in zip(sents,segments):
+                if len(curr_block)+len(sent) >= curr_tgt_len:
+                    # curr_block.append(emb_id)
+                    blocks.append(curr_block)
+                    all_segements.append(current_seg)
+                    curr_block = []
+                    current_seg = []
+                    curr_tgt_len = target_length if random.random() > short_seq_prob \
+                        else random.randint(3, target_length)
+                curr_block.extend(sent)
+                current_seg.extend(seg)
+            if len(curr_block) > 0:
+                # curr_block.append(emb_id)
+                blocks.append(curr_block)
+                all_segements.append(current_seg)
+        return {'token_ids': blocks, 'segment_ids': all_segements}
+    print('seg sentence')
+    wiki = ds.map(sentence_wiki, num_proc=16, remove_columns=["title", "text"])
+    print('tokenize and seg words')
+    tokenized_wiki = wiki.map(wiki_tokenize_function, num_proc=16, batched=True, remove_columns=["sentences"])
+    print('group lines')
+    processed_wiki = tokenized_wiki.map(wiki_pad_each_line, num_proc=16, batched=True, remove_columns=tokenized_wiki.column_names)
+    return processed_wiki
 
 def create_wiki_dataset(wiki_dir,
                          tokenizer_file,
@@ -181,8 +247,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--wiki_dir', type=str,default=None)
     parser.add_argument('--book_dir', type=str,default=None)
-    parser.add_argument('--output_dir', type=str,default='/mnt/myHIKSEMI/data/cci2_10m_mae_dataset')
-    parser.add_argument('--cci2_dir',type=str,default='/mnt/myHIKSEMI/data/CCI2-Data')
+    parser.add_argument('--wiki_zh_dir', type=str,default='/media/yueyulin/data_4t/data/wiki_zh_202311/')
+    parser.add_argument('--output_dir', type=str,default='/media/yueyulin/data_4t/data/wikizh_mae_dataset')
+    parser.add_argument('--cci2_dir',type=str,default=None)
     parser.add_argument('--tokenizer_file', type=str,default='/home/yueyulin/github/RWKV_LM_EXT/tokenizer/rwkv_vocab_v20230424.txt')
     args = parser.parse_args()
     
@@ -205,6 +272,12 @@ if __name__ == '__main__':
         print(cci2_dataset[0])
         print('-----------------------------------------')
         ds.append(cci2_dataset)
+    if args.wiki_zh_dir is not None:
+        wiki_zh_dataset = create_wiki_zh_dataset(args.wiki_zh_dir, args.tokenizer_file, 512)
+        print(wiki_zh_dataset)
+        print(wiki_zh_dataset[0])
+        print('-----------------------------------------')
+        ds.append(wiki_zh_dataset)
     os.makedirs(args.output_dir,exist_ok=True)
     concatenated_dataset = datasets.concatenate_datasets(ds)
     print(concatenated_dataset)
