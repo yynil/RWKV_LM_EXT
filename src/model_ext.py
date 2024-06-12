@@ -584,14 +584,20 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         decoder_loss = F.cross_entropy(decoder_out.view(-1,args.vocab_size),decoder_labels.view(-1))
         del decoder_input_ids, decoder_labels,decoder_out
         torch.cuda.empty_cache()
+        returned_loss = {}
         if args.dup_mae:
             ot_embedding = self.ot_embedding(head, mask)
             bag_word_weight = batch['bag_word_weight']
             ot_loss = self.decoder_ot_loss(ot_embedding, bag_word_weight)
+            returned_loss['ot_loss'] = ot_loss
             loss = enc_loss + decoder_loss + ot_loss
-        loss = enc_loss + decoder_loss
+        else:
+            loss = enc_loss + decoder_loss
+        returned_loss['enc_loss'] = enc_loss
+        returned_loss['decoder_loss'] = decoder_loss
+        returned_loss['loss'] = loss
         self.log('train_loss', loss)
-        return loss
+        return returned_loss
     def training_step_end(self, batch_parts):
         if pl.__version__[0]!='2':
             all = self.all_gather(batch_parts)

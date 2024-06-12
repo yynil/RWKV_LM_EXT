@@ -118,7 +118,17 @@ class TrainerCallback(pl.Callback):
             # self.log("s", real_step, prog_bar=True, on_step=True)
 
             if len(args.wandb) > 0:
-                lll = {"loss": trainer.my_loss,   "Gtokens": real_step * token_per_step / 1e9}
+                # returned_loss['ot_loss'] = ot_loss
+                # returned_loss['enc_loss'] = enc_loss
+                # returned_loss['decoder_loss'] = decoder_loss
+                lll = {"loss": trainer.my_loss,  
+                        "Gtokens": real_step * token_per_step / 1e9}
+                if 'ot_loss' in outputs:
+                    lll["ot_loss"] = outputs['ot_loss']
+                if 'enc_loss' in outputs:
+                    lll["enc_loss"] = outputs['enc_loss']
+                if 'decoder_loss' in outputs:
+                    lll["decoder_loss"] = outputs['decoder_loss']
                 if kt_s > 0:
                     lll["kt/s"] = kt_s
                 trainer.my_wandb.log(lll, step=int(real_step))
