@@ -380,7 +380,7 @@ class OneLayerDecoder(pl.LightningModule):
         x = self.drop0(x + self.att(self.ln1(x), self.ln1(x1)))
         x = self.drop1(x + self.ffn(self.ln2(x)))
         x = self.ln_out(x)
-        x = self.head(x[:,1:])
+        x = self.head(x[:,:-1])
         return x
 def create_mask(x,emb_id=1):
     mask = torch.ones(x.size(0),x.size(1)).to(x.device)
