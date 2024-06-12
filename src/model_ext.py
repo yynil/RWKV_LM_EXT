@@ -22,6 +22,59 @@ MyFunction = __nop
 if os.environ["RWKV_JIT_ON"] == "1":
     MyModule = torch.jit.ScriptModule
     MyFunction = torch.jit.script_method
+HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE_A"])
+from torch.utils.cpp_extension import load
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+wkv6_bi_cuda = load(name="wkv6_bi", sources=[f"{parent_dir}/cuda/wkv6_bi_op.cpp", f"{parent_dir}/cuda/wkv6_bi_cuda.cu"],
+                            verbose=True, extra_cuda_cflags=["-res-usage", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization", f"-D_N_={HEAD_SIZE}", f"-D_T_={int(os.environ['RWKV_CTXLEN'])}"])
+class WKV_6_BI(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, B, T, C, H,mask, r, k, v, w, u):
+        with torch.no_grad():
+            assert r.dtype == torch.bfloat16
+            assert k.dtype == torch.bfloat16
+            assert v.dtype == torch.bfloat16
+            assert w.dtype == torch.bfloat16
+            assert u.dtype == torch.bfloat16
+            assert mask.dtype == torch.int
+            assert HEAD_SIZE == C // H
+            ctx.B = B
+            ctx.T = T
+            ctx.C = C
+            ctx.H = H
+            ctx.mask = mask
+            assert r.is_contiguous()
+            assert k.is_contiguous()
+            assert v.is_contiguous()
+            assert w.is_contiguous()
+            assert u.is_contiguous()
+            assert mask.is_contiguous()
+            ew = (-torch.exp(w.float())).contiguous()
+            ctx.save_for_backward(r, k, v, ew, u)
+            y = torch.empty((B, T, C), device=r.device, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+            wkv6_bi_cuda.forward(B, T, C, H,mask, r, k, v, ew, u, y)
+            return y
+    @staticmethod
+    def backward(ctx, gy):
+        with torch.no_grad():
+            assert gy.dtype == torch.bfloat16
+            B = ctx.B
+            T = ctx.T
+            C = ctx.C
+            H = ctx.H
+            mask = ctx.mask
+            assert gy.is_contiguous()
+            r, k, v, ew, u = ctx.saved_tensors
+            gr = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+            gk = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+            gv = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+            gw = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+            gu = torch.empty((B, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
+            wkv6_bi_cuda.backward(B, T, C, H,mask, r, k, v, ew, u, gy, gr, gk, gv, gw, gu)
+            gu = torch.sum(gu, 0).view(H, C//H)
+            return (None, None, None, None,None, gr, gk, gv, gw, gu)
+def RUN_CUDA_RWKV6_BI(B, T, C, H,mask, r, k, v, w, u):
+    return WKV_6_BI.apply(B, T, C, H,mask, r, k, v, w, u)
 
 def load_embedding_ckpt_and_parse_args(ckpt_file, args):
     try:
@@ -386,7 +439,7 @@ def create_mask(x,emb_id=1):
     mask = torch.ones(x.size(0),x.size(1)).to(x.device)
     mask[x == 0] = 0
     mask[x == emb_id] = 0
-    return mask.to(torch.long)
+    return mask.to(torch.int)
 
 def reverse_x_idx(mask,max_len):
     idx_actual_len = torch.sum(mask,dim=1)
@@ -399,29 +452,25 @@ def reverse_x_idx(mask,max_len):
 def reverse_x(x,rev_idx):
     return torch.gather(x,1,rev_idx.to(x.device).unsqueeze(-1).expand(-1,-1,x.size(-1)))
 
-def bi_att_forward(self,x,rev_idx):
+def bi_att_forward(self,x,mask):
     B,T,C = x.size()
     H = self.n_head
     r,k,v,g,w = self.jit_func(x)
     # rev_x = reverse_x(x,rev_idx)
     # rev_r,rev_k,rev_v,rev_g,rev_w = self.jit_func(rev_x)
     from src.model import RUN_CUDA_RWKV6
-    x = RUN_CUDA_RWKV6(B, T, C, H, r, k, v, w, u=self.time_faaaa)
-    rev_k = reverse_x(k,rev_idx)
-    rev_v = reverse_x(v,rev_idx)
-    rev_x = RUN_CUDA_RWKV6(B, T, C, H, r, rev_k, rev_v, w, u=self.time_faaaa)
+    x = RUN_CUDA_RWKV6_BI(B, T, C, H,mask, r, k, v, w, u=self.time_faaaa)
     x = self.jit_func_2(x, g)
-    rev_x = self.jit_func_2(rev_x, g)
-    return x+reverse_x(rev_x,rev_idx)
+    return x
 
-def bi_block_forward(self,x,rev_idx):
+def bi_block_forward(self,x,mask):
     args = self.args
     if self.layer_id == 0:
         x = self.ln0(x)
     if self.layer_id == 0 and args.pre_ffn > 0:
         x = self.drop0(x + self.pre_ffn(self.ln1(x)))
     else:
-        x = self.drop0(x+self.att(self.ln1(x),rev_idx))
+        x = self.drop0(x+self.att(self.ln1(x),mask))
     x = self.drop1(x+self.ffn(self.ln2(x)))
     return x
 
@@ -566,12 +615,12 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         for block in self.blocks:
             if args.grad_cp == 1:
                 if args.bi_rwkv:
-                    x = deepspeed.checkpointing.checkpoint(block, x, rev_idx)
+                    x = deepspeed.checkpointing.checkpoint(block, x, mask)
                 else:
                     x = deepspeed.checkpointing.checkpoint(block, x)
             else:
                 if args.bi_rwkv:
-                    x = block(x,rev_idx)
+                    x = block(x,mask)
                 else:
                     x = block(x)
 
