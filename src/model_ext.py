@@ -371,13 +371,15 @@ def bi_att_forward(self,x,rev_idx):
     B,T,C = x.size()
     H = self.n_head
     r,k,v,g,w = self.jit_func(x)
-    rev_x = reverse_x(x,rev_idx)
-    rev_r,rev_k,rev_v,rev_g,rev_w = self.jit_func(rev_x)
+    # rev_x = reverse_x(x,rev_idx)
+    # rev_r,rev_k,rev_v,rev_g,rev_w = self.jit_func(rev_x)
     from src.model import RUN_CUDA_RWKV6
     x = RUN_CUDA_RWKV6(B, T, C, H, r, k, v, w, u=self.time_faaaa)
-    rev_x = RUN_CUDA_RWKV6(B, T, C, H, rev_r, rev_k, rev_v, rev_w, u=self.time_faaaa)
+    rev_k = reverse_x(k,rev_idx)
+    rev_v = reverse_x(v,rev_idx)
+    rev_x = RUN_CUDA_RWKV6(B, T, C, H, r, rev_k, rev_v, w, u=self.time_faaaa)
     x = self.jit_func_2(x, g)
-    rev_x = self.jit_func_2(rev_x, rev_g)
+    rev_x = self.jit_func_2(rev_x, g)
     return x+reverse_x(rev_x,rev_idx)
 
 def bi_block_forward(self,x,rev_idx):
