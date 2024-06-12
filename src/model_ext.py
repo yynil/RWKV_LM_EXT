@@ -315,8 +315,8 @@ class RWKV_Tmix_x060_Aggressive(original_RWKV_Tmix_x060):
         mw1, mk1, mv1, mr1, mg1 = xxx1.unbind(dim=0)
 
         xw = x + xx * (self.time_maa_w + mw)
-        xk = x + xx1 * (self.time_maa_k + mk1)
-        xv = x + xx1 * (self.time_maa_v + mv1)
+        xk = x1 + xx1 * (self.time_maa_k + mk1)
+        xv = x1 + xx1 * (self.time_maa_v + mv1)
         xr = x + xx * (self.time_maa_r + mr)
         xg = x + xx * (self.time_maa_g + mg)
 
