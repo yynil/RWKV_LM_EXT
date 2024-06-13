@@ -301,12 +301,12 @@ class RWKV_Tmix_x060_Aggressive(original_RWKV_Tmix_x060):
         xr1 = x1 + xx1 * (self.time_maa_r + mr1)
         xg1 = x1 + xx1 * (self.time_maa_g + mg1)
 
-        r = self.receptance(xr+xr1)
-        k = self.key(xk+xk1)
-        v = self.value(xv+xv1)
-        g = F.silu(self.gate(xg+xg1))
+        r = self.receptance(xr)
+        k = self.key(xk1)
+        v = self.value(xv1)
+        g = F.silu(self.gate(xg))
 
-        ww = torch.tanh((xw+xw1) @ self.time_decay_w1) @ self.time_decay_w2
+        ww = torch.tanh(xw @ self.time_decay_w1) @ self.time_decay_w2
         w = self.time_decay + ww
 
         return r, k, v, g, w
@@ -366,6 +366,12 @@ def create_mask(x,emb_id=1):
     mask = torch.ones(x.size(0),x.size(1)).to(x.device)
     mask[x == 0] = 0
     mask[x == emb_id] = 0
+    return mask.to(torch.int)
+def create_ot_mask(x,emb_id=1,mask_id=3):
+    mask = torch.ones(x.size(0),x.size(1)).to(x.device)
+    mask[x == 0] = 0
+    mask[x == emb_id] = 0
+    mask[x == mask_id] = 0
     return mask.to(torch.int)
 
 def reverse_x_idx(mask,max_len):
@@ -427,6 +433,8 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
             args.bi_rwkv = False
         if not hasattr(args, 'bow_loss_weight'):
             args.bow_loss_weight = 0.1
+        if not hasattr(args, 'mask_id'):
+            args.mask_id = 3
         assert args.n_embd % 32 == 0
         assert args.dim_att % 32 == 0
         assert args.dim_ffn % 32 == 0
@@ -594,7 +602,7 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         B,T = encoder_input_ids.size()
         h,head,mask = self.forward(encoder_input_ids)
         enc_loss = F.cross_entropy(head.view(-1,args.vocab_size),encoder_labels.view(-1))
-        del encoder_input_ids,encoder_labels
+        del encoder_labels
         torch.cuda.empty_cache()
         h = h.unsqueeze(1).expand(-1,T,-1)
         decoder_out = self.onelayer_decoder(h,decoder_input_ids)
@@ -603,10 +611,11 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         torch.cuda.empty_cache()
         returned_loss = {}
         if args.dup_mae:
-            ot_embedding = self.ot_embedding(head, mask)
+            ot_mask = create_ot_mask(encoder_input_ids,emb_id=args.emb_id,mask_id=args.mask_id)
+            ot_embedding = self.ot_embedding(head, ot_mask)
             bag_word_weight = batch['bag_word_weight']
             bow_loss = self.decoder_ot_loss(ot_embedding, bag_word_weight)
-            del bag_word_weight
+            del bag_word_weight,encoder_input_ids
             del ot_embedding
             torch.cuda.empty_cache()
             returned_loss['bow_loss'] = bow_loss*args.bow_loss_weight
