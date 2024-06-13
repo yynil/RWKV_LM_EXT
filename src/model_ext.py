@@ -22,59 +22,7 @@ MyFunction = __nop
 if os.environ["RWKV_JIT_ON"] == "1":
     MyModule = torch.jit.ScriptModule
     MyFunction = torch.jit.script_method
-HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE_A"])
-from torch.utils.cpp_extension import load
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-wkv6_bi_cuda = load(name="wkv6_bi", sources=[f"{parent_dir}/cuda/wkv6_bi_op.cpp", f"{parent_dir}/cuda/wkv6_bi_cuda.cu"],
-                            verbose=True, extra_cuda_cflags=["-res-usage", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization", f"-D_N_={HEAD_SIZE}", f"-D_T_={int(os.environ['RWKV_CTXLEN'])}"])
-class WKV_6_BI(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, B, T, C, H,mask, r, k, v, w, u):
-        with torch.no_grad():
-            assert r.dtype == torch.bfloat16
-            assert k.dtype == torch.bfloat16
-            assert v.dtype == torch.bfloat16
-            assert w.dtype == torch.bfloat16
-            assert u.dtype == torch.bfloat16
-            assert mask.dtype == torch.int
-            assert HEAD_SIZE == C // H
-            ctx.B = B
-            ctx.T = T
-            ctx.C = C
-            ctx.H = H
-            ctx.mask = mask
-            assert r.is_contiguous()
-            assert k.is_contiguous()
-            assert v.is_contiguous()
-            assert w.is_contiguous()
-            assert u.is_contiguous()
-            assert mask.is_contiguous()
-            ew = (-torch.exp(w.float())).contiguous()
-            ctx.save_for_backward(r, k, v, ew, u)
-            y = torch.empty((B, T, C), device=r.device, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
-            wkv6_bi_cuda.forward(B, T, C, H,mask, r, k, v, ew, u, y)
-            return y
-    @staticmethod
-    def backward(ctx, gy):
-        with torch.no_grad():
-            assert gy.dtype == torch.bfloat16
-            B = ctx.B
-            T = ctx.T
-            C = ctx.C
-            H = ctx.H
-            mask = ctx.mask
-            assert gy.is_contiguous()
-            r, k, v, ew, u = ctx.saved_tensors
-            gr = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
-            gk = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
-            gv = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
-            gw = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
-            gu = torch.empty((B, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)#.uniform_(-100, 100)
-            wkv6_bi_cuda.backward(B, T, C, H,mask, r, k, v, ew, u, gy, gr, gk, gv, gw, gu)
-            gu = torch.sum(gu, 0).view(H, C//H)
-            return (None, None, None, None,None, gr, gk, gv, gw, gu)
-def RUN_CUDA_RWKV6_BI(B, T, C, H,mask, r, k, v, w, u):
-    return WKV_6_BI.apply(B, T, C, H,mask, r, k, v, w, u)
+
 
 def load_embedding_ckpt_and_parse_args(ckpt_file, args):
     try:
@@ -325,38 +273,12 @@ class RWKV_Tmix_x060_Aggressive(original_RWKV_Tmix_x060):
         super(RWKV_Tmix_x060_Aggressive, self).__init__(args, layer_id)
 
     @MyFunction
-    def jit_func(self, x):
-        B, T, C = x.size()
-
-        xx = self.time_shift(x) - x
-
-        xxx = x + xx * self.time_maa_x
-        xxx = torch.tanh(xxx @ self.time_maa_w1).view(B*T, 5, -1).transpose(0, 1)
-        xxx = torch.bmm(xxx, self.time_maa_w2).view(5, B, T, -1)
-        mw, mk, mv, mr, mg = xxx.unbind(dim=0)
-
-        xw = x + xx * (self.time_maa_w + mw)
-        xk = x + xx * (self.time_maa_k + mk)
-        xv = x + xx * (self.time_maa_v + mv)
-        xr = x + xx * (self.time_maa_r + mr)
-        xg = x + xx * (self.time_maa_g + mg)
-
-        r = self.receptance(xr)
-        k = self.key(xk)
-        v = self.value(xv)
-        g = F.silu(self.gate(xg))
-
-        ww = torch.tanh(xw @ self.time_decay_w1) @ self.time_decay_w2
-        w = self.time_decay + ww
-
-        return r, k, v, g, w
-
-    @MyFunction
     def jit_func(self, x,x1):
         B, T, C = x.size()
 
         xx = self.time_shift(x) - x
         xx1 = self.time_shift(x1) - x1
+
         xxx = x + xx * self.time_maa_x
         xxx = torch.tanh(xxx @ self.time_maa_w1).view(B*T, 5, -1).transpose(0, 1)
         xxx = torch.bmm(xxx, self.time_maa_w2).view(5, B, T, -1)
@@ -368,17 +290,23 @@ class RWKV_Tmix_x060_Aggressive(original_RWKV_Tmix_x060):
         mw1, mk1, mv1, mr1, mg1 = xxx1.unbind(dim=0)
 
         xw = x + xx * (self.time_maa_w + mw)
-        xk = x1 + xx1 * (self.time_maa_k + mk1)
-        xv = x1 + xx1 * (self.time_maa_v + mv1)
+        xk = x + xx * (self.time_maa_k + mk1)
+        xv = x + xx * (self.time_maa_v + mv1)
         xr = x + xx * (self.time_maa_r + mr)
         xg = x + xx * (self.time_maa_g + mg)
 
-        r = self.receptance(xr)
-        k = self.key(xk)
-        v = self.value(xv)
-        g = F.silu(self.gate(xg))
+        xw1 = x1 + xx1 * (self.time_maa_w + mw1)
+        xk1 = x1 + xx1 * (self.time_maa_k + mk1)
+        xv1 = x1 + xx1 * (self.time_maa_v + mv1)
+        xr1 = x1 + xx1 * (self.time_maa_r + mr1)
+        xg1 = x1 + xx1 * (self.time_maa_g + mg1)
 
-        ww = torch.tanh(xw @ self.time_decay_w1) @ self.time_decay_w2
+        r = self.receptance(xr+xr1)
+        k = self.key(xk+xk1)
+        v = self.value(xv+xv1)
+        g = F.silu(self.gate(xg+xg1))
+
+        ww = torch.tanh((xw+xw1) @ self.time_decay_w1) @ self.time_decay_w2
         w = self.time_decay + ww
 
         return r, k, v, g, w
@@ -424,16 +352,15 @@ class OneLayerDecoder(pl.LightningModule):
         self.ln_out = nn.LayerNorm(args.n_embd)
     
     def forward(self, x, x1):
-        # print(x.shape)#B,T+1,C
+        # print(x.shape)#B,T,C
         # print(x1.shape)#B,T
+        B,T = x1.size()
         x1 = self.emb(x1)#B,T,C
-        #append the x[:,0] to x1
-        x1 = torch.cat([x[:,0].unsqueeze(1),x1],dim=1)
         assert x1.shape == x.shape
         x = self.drop0(x + self.att(self.ln1(x), self.ln1(x1)))
         x = self.drop1(x + self.ffn(self.ln2(x)))
         x = self.ln_out(x)
-        x = self.head(x[:,:-1])
+        x = self.head(x)
         return x
 def create_mask(x,emb_id=1):
     mask = torch.ones(x.size(0),x.size(1)).to(x.device)
@@ -452,25 +379,32 @@ def reverse_x_idx(mask,max_len):
 def reverse_x(x,rev_idx):
     return torch.gather(x,1,rev_idx.to(x.device).unsqueeze(-1).expand(-1,-1,x.size(-1)))
 
-def bi_att_forward(self,x,mask):
+def bi_att_forward(self,x,rev_idx,mask):
     B,T,C = x.size()
     H = self.n_head
     r,k,v,g,w = self.jit_func(x)
     # rev_x = reverse_x(x,rev_idx)
     # rev_r,rev_k,rev_v,rev_g,rev_w = self.jit_func(rev_x)
+    rev_k = reverse_x(k,rev_idx)
+    rev_v = reverse_x(v,rev_idx)
+    rev_w = reverse_x(w,rev_idx)
     from src.model import RUN_CUDA_RWKV6
-    x = RUN_CUDA_RWKV6_BI(B, T, C, H,mask, r, k, v, w, u=self.time_faaaa)
+    x = RUN_CUDA_RWKV6(B, T, C, H, r, k, v, w, u=self.time_faaaa)
+    rev_x = RUN_CUDA_RWKV6(B, T, C, H, r, rev_k, rev_v, rev_w, u=self.time_faaaa)
     x = self.jit_func_2(x, g)
+    rev_x = self.jit_func_2(rev_x, g)
+    rev_x = reverse_x(rev_x,rev_idx)*mask.unsqueeze(-1)#ignore unmasked tokens
+    x = x + rev_x
     return x
 
-def bi_block_forward(self,x,mask):
+def bi_block_forward(self,x,rev_idx,mask):
     args = self.args
     if self.layer_id == 0:
         x = self.ln0(x)
     if self.layer_id == 0 and args.pre_ffn > 0:
         x = self.drop0(x + self.pre_ffn(self.ln1(x)))
     else:
-        x = self.drop0(x+self.att(self.ln1(x),mask))
+        x = self.drop0(x+self.att(self.ln1(x),rev_idx,mask))
     x = self.drop1(x+self.ffn(self.ln2(x)))
     return x
 
@@ -491,6 +425,8 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
             args.emb_id = 1
         if not hasattr(args, 'bi_rwkv'):
             args.bi_rwkv = False
+        if not hasattr(args, 'bow_loss_weight'):
+            args.bow_loss_weight = 0.1
         assert args.n_embd % 32 == 0
         assert args.dim_att % 32 == 0
         assert args.dim_ffn % 32 == 0
@@ -615,12 +551,12 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         for block in self.blocks:
             if args.grad_cp == 1:
                 if args.bi_rwkv:
-                    x = deepspeed.checkpointing.checkpoint(block, x, mask)
+                    x = deepspeed.checkpointing.checkpoint(block, x, rev_idx,mask)
                 else:
                     x = deepspeed.checkpointing.checkpoint(block, x)
             else:
                 if args.bi_rwkv:
-                    x = block(x,mask)
+                    x = block(x,rev_idx,mask)
                 else:
                     x = block(x)
 
@@ -660,7 +596,7 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         enc_loss = F.cross_entropy(head.view(-1,args.vocab_size),encoder_labels.view(-1))
         del encoder_input_ids,encoder_labels
         torch.cuda.empty_cache()
-        h = h.unsqueeze(1).expand(-1,T+1,-1)
+        h = h.unsqueeze(1).expand(-1,T,-1)
         decoder_out = self.onelayer_decoder(h,decoder_input_ids)
         decoder_loss = F.cross_entropy(decoder_out.view(-1,args.vocab_size),decoder_labels.view(-1))
         del decoder_input_ids, decoder_labels,decoder_out
@@ -669,12 +605,12 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         if args.dup_mae:
             ot_embedding = self.ot_embedding(head, mask)
             bag_word_weight = batch['bag_word_weight']
-            ot_loss = self.decoder_ot_loss(ot_embedding, bag_word_weight)
+            bow_loss = self.decoder_ot_loss(ot_embedding, bag_word_weight)
             del bag_word_weight
             del ot_embedding
             torch.cuda.empty_cache()
-            returned_loss['ot_loss'] = ot_loss
-            loss = enc_loss + decoder_loss + ot_loss
+            returned_loss['bow_loss'] = bow_loss*args.bow_loss_weight
+            loss = enc_loss + decoder_loss + bow_loss
         else:
             loss = enc_loss + decoder_loss
         returned_loss['enc_loss'] = enc_loss
