@@ -261,7 +261,9 @@ if __name__ == '__main__':
             print(colorama.Fore.GREEN + f'total params: {total_params}, trainable params: {trainable_params}, trainable params percentage: {trainable_params/total_params*100:.2f}%')
         print_trainable_params(model)
         """
-    elif args.train_type == 'states':
+    elif args.train_type == 'state':
+        args.lora = False
+        args.state_tune = True
         model = RWKV(args)
         print(model)
         inform = model.load_state_dict(w,strict=False)
