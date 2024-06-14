@@ -613,7 +613,8 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         torch.cuda.empty_cache()
         returned_loss = {}
         if args.dup_mae:
-            ot_mask = create_ot_mask(encoder_input_ids,emb_id=args.emb_id,mask_id=args.mask_id)
+            # ot_mask = create_ot_mask(encoder_input_ids,emb_id=args.emb_id,mask_id=args.mask_id)
+            ot_mask = mask
             ot_embedding = self.ot_embedding(head, ot_mask)
             bag_word_weight = batch['bag_word_weight']
             bow_loss = self.decoder_ot_loss(ot_embedding, bag_word_weight)
