@@ -154,6 +154,8 @@ def create_arg_parser():
     parser.add_argument('--train_type', type=str, default='', help='train type')
     parser.add_argument('--skip_steps',type=int,default=0,help='skip steps in the peft checkpoint')
 
+    parser.add_argument('--mlm_probability', type=float, default=0.15, help='mlm probability')
+
     return parser
 
 def configure_args(args):
@@ -180,10 +182,10 @@ if __name__ == '__main__':
     from datasets import load_from_disk
     dataset = load_from_disk(args.train_data)
     collate_fn = \
-        partial(mae_collator, max_seq_length=args.max_seq_length, encoder_mlm_probability=0.3) \
+        partial(mae_collator, max_seq_length=args.max_seq_length, encoder_mlm_probability=args.mlm_probability) \
             if not args.dup_mae \
             else \
-        partial(dup_mae_collator, max_seq_length=args.max_seq_length, encoder_mlm_probability=0.3,vocab_size=args.vocab_size)
+        partial(dup_mae_collator, max_seq_length=args.max_seq_length, encoder_mlm_probability=args.mlm_probability,vocab_size=args.vocab_size)
     train_dataloader = DataLoader(dataset,
                                   num_workers=8,
                                   pin_memory=True, 
