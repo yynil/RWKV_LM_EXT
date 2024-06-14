@@ -3,7 +3,7 @@ import os
 import orjson
 
 CACHE_SIZE = 1024
-def convert_ie_2_instruction(input_jsonl :str, output_fp, cache_list):
+def convert_ie_2_instruction(input_jsonl :str, output_fp, cache_list,task):
     if input_jsonl == 'FLUSH':
         print('flush')
         for item in cache_list:
@@ -14,6 +14,9 @@ def convert_ie_2_instruction(input_jsonl :str, output_fp, cache_list):
         return
     data = orjson.loads(input_jsonl)
     if 'instruction' in data and 'output' in data:
+        data_task = data['task']
+        if data_task != task:
+            return
         instruction = data['instruction']
         output = data['output']
         instruction_data = orjson.loads(instruction)
@@ -36,11 +39,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--input_jsonl', type=str, required=True)
     parser.add_argument('--output_jsonl', type=str, required=True)
+    parser.add_argument('--task', type=str, default='NER')
     args = parser.parse_args()
     output_fp = open(args.output_jsonl, 'w')
     with open(args.input_jsonl, 'r') as fp:
         cache_list = []
         for line in fp:
-            convert_ie_2_instruction(line, output_fp, cache_list)
-    convert_ie_2_instruction('FLUSH', output_fp, cache_list)
+            convert_ie_2_instruction(line, output_fp, cache_list,args.task)
+    convert_ie_2_instruction('FLUSH', output_fp, cache_list,args.task)
     print(f'finish {args.output_jsonl}')

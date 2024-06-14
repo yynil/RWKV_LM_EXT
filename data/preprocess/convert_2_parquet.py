@@ -108,15 +108,20 @@ def read_jsonl_sized_chunks(fp,chunksize=10000,tokenizer=None):
                     inserted_index = bisect.bisect_left(maxium_lens,length)
                     if inserted_index > larget_pos_index:
                         larget_pos_index = inserted_index
+                #we only have one pos and multiple neg
                 for n in neg:
                     length = len(n)
                     inserted_index = bisect.bisect_left(maxium_lens,length)
-                    if inserted_index > larget_neg_index:
-                        larget_neg_index = inserted_index
-                bucket_index = max(larget_pos_index,larget_neg_index,query_index)
-                results[bucket_index]['query'].append(query)
-                results[bucket_index]['pos'].append(pos)
-                results[bucket_index]['neg'].append(neg)
+                    bucket_index = max(inserted_index,larget_pos_index,query_index)
+                    results[bucket_index]['query'].append(query)
+                    results[bucket_index]['pos'].append(pos)
+                    results[bucket_index]['neg'].append([n])
+                #     if inserted_index > larget_neg_index:
+                #         larget_neg_index = inserted_index
+                # bucket_index = max(larget_pos_index,larget_neg_index,query_index)
+                # results[bucket_index]['query'].append(query)
+                # results[bucket_index]['pos'].append(pos)
+                # results[bucket_index]['neg'].append(neg)
             num_correct += 1
             if num_correct % chunksize == 0:
                 yield results
