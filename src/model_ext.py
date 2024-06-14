@@ -395,12 +395,13 @@ def bi_att_forward(self,x,rev_idx,mask):
     rev_k = reverse_x(k,rev_idx)
     rev_v = reverse_x(v,rev_idx)
     rev_w = reverse_x(w,rev_idx)
+    rev_g = reverse_x(g,rev_idx)
     from src.model import RUN_CUDA_RWKV6
     x = RUN_CUDA_RWKV6(B, T, C, H, r, k, v, w, u=self.time_faaaa)
     rev_x = RUN_CUDA_RWKV6(B, T, C, H, rev_r, rev_k, rev_v, rev_w, u=self.time_faaaa)
     x = self.jit_func_2(x, g)
-    rev_x = self.jit_func_2(rev_x, g)
-    rev_x = reverse_x(rev_x,rev_idx)*mask.unsqueeze(-1)#ignore unmasked tokens
+    rev_x = self.jit_func_2(rev_x, rev_g)
+    rev_x = reverse_x(rev_x,rev_idx)*mask.unsqueeze(-1)#ignore unmasked tokens including emb_id
     x = x + rev_x
     return x
 
