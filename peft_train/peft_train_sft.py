@@ -215,7 +215,6 @@ if __name__ == '__main__':
 
     
     w = load_ckpt_and_parse_args(args.model_file,args)
-    os.environ["RWKV_TRAIN_TYPE"] = args.train_type
    
 
     if args.train_type == 'lora': 
