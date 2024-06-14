@@ -93,7 +93,7 @@ def create_arg_parser():
     import argparse
     parser = argparse.ArgumentParser(description='peft train BiEncoder')
     parser.add_argument('--train_data', type=str,help='parquet dicrectory containing the training data')
-    parser.add_argument('--train_lengths',type=int,nargs='+',default=[64,128,256,512,1024,2048],help='length of the training data')
+    parser.add_argument('--train_lengths',type=intf,nargs='+',default=[64,128,256,512,1024,2048],help='length of the training data')
     parser.add_argument('--train_batch_sizes', type=int,nargs='+', default=[64,32,16,8,4,2], help='batch size to train the model')
     parser.add_argument('--model_file', type=str,default='/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth', help='model to be trained,now rwkv5 and rwkv6 are supported')
     parser.add_argument('--output_dir', type=str, default='/media/yueyulin/bigdata/tmp',help='directory to save the trained model')
@@ -289,12 +289,19 @@ if __name__ == '__main__':
                 param.requires_grad = False
         init_dict = {}
         rank_zero_info(f"########## Init PISSA... ##########")
+
         for name, m in model.named_modules():
             if hasattr(m, "pissa_init") and callable(getattr(m, "pissa_init")):
                 m.pissa_init(args.svd_niter)
                 init_dict[f'{name}.init_lora_A'] = m.lora_A.data
                 init_dict[f'{name}.init_lora_B'] = m.lora_B.data
-        torch.save(init_dict, f'{args.proj_dir}/init_pissa.pth')
+        save_pth = f'{args.proj_dir}/init_pissa.pth'
+        if not os.path.exists(save_pth):
+            print(f"save init pissa to {save_pth}")
+            torch.save(init_dict, f'{args.proj_dir}/init_pissa.pth')
+        else:
+            print(f"{save_pth} exists")
+
        
         print(model)
 
