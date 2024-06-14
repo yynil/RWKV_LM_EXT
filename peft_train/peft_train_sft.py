@@ -304,7 +304,7 @@ if __name__ == '__main__':
     args.skip_steps = 0
     trainer = Trainer(accelerator="auto",
                       strategy=args.strategy,
-                      devices='auto',
+                      devices=args.num_devices,
                       num_nodes=args.num_nodes,
                       precision=precision,
                       logger=False,

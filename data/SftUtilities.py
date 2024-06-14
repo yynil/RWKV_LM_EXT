@@ -37,8 +37,12 @@ def tokenize_fn(examples, tokenizer,pad_id=0,eos_id=1,max_length=512,input_field
         inputs_ids.append(whole_ids)
         targets_ids.append(shifted_output_ids)
     return {'input_ids': inputs_ids, 'labels': targets_ids}
-
-def tokenize_fn_no_chunk(examples, tokenizer,pad_id=0,eos_id=1,input_field = 'input', output_field = 'output'):
+tokenizer = None
+def tokenize_fn_no_chunk(examples, tokenizer_file,pad_id=0,eos_id=1,input_field = 'input', output_field = 'output'):
+    global tokenizer
+    if tokenizer is None:
+        from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
+        tokenizer = TRIE_TOKENIZER(tokenizer_file)
     inputs = examples[input_field]
     outputs = examples[output_field]
     inputs_ids = []
@@ -59,19 +63,20 @@ def create_variable_sized_sft_from_jsonl(input_jsonl, output_sft,tokenizer_file,
     import sys
     import os
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
-    tokenizer = TRIE_TOKENIZER(tokenizer_file)
-    map_fn = functools.partial(tokenize_fn_no_chunk, tokenizer=tokenizer, input_field='input', output_field='output')
-    ds = ds.map(map_fn, batched=True, num_proc=1,remove_columns=ds.column_names)
+    map_fn = functools.partial(tokenize_fn_no_chunk, tokenizer_file=tokenizer_file, input_field='input', output_field='output')
+    ds = ds.map(map_fn, batched=True, num_proc=8,remove_columns=ds.column_names)
     sizes = [64,128,256,512,1024,2048]
     data = [[] for i in range(len(sizes)+1)]
     import bisect
+    from tqdm import tqdm
+    progress_bar = tqdm(total=len(ds),desc='splitting')
     for i, example in enumerate(ds):
         length = len(example['input_ids'])
         idx = bisect.bisect_left(sizes, length)
         if idx < len(sizes):
             data[idx].append(example)
-    
+        progress_bar.update(1)
+    progress_bar.close()
     for i in range(len(data)):
         ds_name = output_sft + f'ds_{sizes[i] if i < len(sizes) else "max"}'
         if len(data[i]) > 0:
