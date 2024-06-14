@@ -93,7 +93,7 @@ def create_arg_parser():
     import argparse
     parser = argparse.ArgumentParser(description='peft train BiEncoder')
     parser.add_argument('--train_data', type=str,help='parquet dicrectory containing the training data')
-    parser.add_argument('--train_lengths',type=intf,nargs='+',default=[64,128,256,512,1024,2048],help='length of the training data')
+    parser.add_argument('--train_lengths',type=int,nargs='+',default=[64,128,256,512,1024,2048],help='length of the training data')
     parser.add_argument('--train_batch_sizes', type=int,nargs='+', default=[64,32,16,8,4,2], help='batch size to train the model')
     parser.add_argument('--model_file', type=str,default='/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth', help='model to be trained,now rwkv5 and rwkv6 are supported')
     parser.add_argument('--output_dir', type=str, default='/media/yueyulin/bigdata/tmp',help='directory to save the trained model')
