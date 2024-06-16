@@ -581,6 +581,142 @@ class RWKV(torch.nn.Module):
 
             return x[-1,:],state
         
+def bi_block_forward(self, x,state, x_emb=None):
+    args = self.args
+    T, C = x.size()
+    if self.layer_id == 0:
+        x = self.ln0(x)
+        if args.my_pos_emb > 0:
+            pos_emb = (self.pos_emb_x + self.pos_emb_y).reshape(T+1, -1)[:-1,:]
+            x = x + pos_emb
+
+    if self.layer_id == 0 and args.pre_ffn > 0:
+        x = x + self.ffnPre(self.ln1(x))
+    else:
+        x_,x_x,state_kv,x_x_rev,state_kv_rev = self.att(self.ln1(x),state[0],state[1],state[2],state[3])
+        x = x + x_
+    x_,state_ffn = self.ffn(self.ln2(x),state[4])
+    x = x + x_
+
+    if args.tiny_att_dim > 0 and self.layer_id == args.tiny_att_layer:
+        xx = self.tiny_ln(x)
+        q = self.tiny_q(xx)[:, :T, :]
+        k = self.tiny_k(xx)[:, :T, :]
+        c = (q @ k.transpose(-2, -1)) * (args.tiny_att_dim ** (-0.5))
+        c = c.masked_fill(self.tiny_mask[:T, :T] == 0, 0)
+        x = x + c @ self.tiny_v(x_emb)
+    return x,x_x,state_kv,x_x_rev,state_kv_rev,state_ffn
+
+def bi_att_forward(self, x,state_xx,state_kv,state_xx_rev,state_kv_rev):
+        is_last_chunk = self.args.is_last_chunk
+        T, C = x.size()
+        H = self.n_head
+        xx = x[-1,:]
+        xx_rev = x[0,:] # we ignore the xx and xx_rev because they are not used in the future forward
+        r, k, v, g, w = self.jit_func(x,state_xx)
+        # if is_last_chunk:
+        #     #only reverse the first T-1 elements
+        #     x_rev = torch.flip(x[:T-1,:], [0])
+        #     x_rev = torch.cat([x_rev, x[-1,:].unsqueeze(0)],dim=0)
+        # else:
+        #     #reverse all elements
+        #     x_rev = torch.flip(x, [0])
+        # rev_r, rev_k, rev_v, rev_g, rev_w = self.jit_func(x_rev,state_xx_rev)
+        #only k,v need to be reversed
+        if is_last_chunk:
+            k_rev = torch.flip(k[:T-1,:], [0])
+            k_rev = torch.cat([k_rev, k[-1,:].unsqueeze(0)],dim=0)
+            v_rev = torch.flip(v[:T-1,:], [0])
+            v_rev = torch.cat([v_rev, v[-1,:].unsqueeze(0)],dim=0)
+            w_rev = torch.flip(w[:T-1,:], [0])
+            w_rev = torch.cat([w_rev, w[-1,:].unsqueeze(0)],dim=0)
+        else:
+            k_rev = torch.flip(k, [0])
+            v_rev = torch.flip(v, [0])
+            w_rev = torch.flip(w, [0])
+        x,s = RUN_RWKV_6(1, T, C, H, state_kv.transpose(-1,-2).contiguous(),r, k, v, w, self.time_faaaa)
+        x_rev,s_rev = RUN_RWKV_6(1, T, C, H, state_kv_rev.transpose(-1,-2).contiguous(),r, k_rev, v_rev, w_rev, self.time_faaaa)
+        s = s.transpose(-1,-2)
+        x = self.jit_func_2(x, g).squeeze(0)
+        s_rev = s_rev.transpose(-1,-2)
+        x_rev = self.jit_func_2(x_rev, g).squeeze(0)
+        #reverse x_rev
+        if is_last_chunk:
+            x_rev = torch.flip(x_rev[:T-1,:], [0])
+            x_rev = torch.cat([x_rev, x_rev[-1,:].unsqueeze(0)],dim=0)
+        else:
+            x_rev = torch.flip(x_rev, [0])
+        x = x + x_rev
+        return x,xx,s,xx_rev,s_rev
+        
+class RwkvMAEForSequenceEmbedding(pl.LightningModule):
+    def __init__(self, args):
+        super().__init__()
+        self.args = args
+        if not hasattr(args, 'dim_att') or args.dim_att == 0:
+            args.dim_att = args.n_embd
+        if not hasattr(args, 'dim_ffn') or args.dim_ffn == 0:
+            args.dim_ffn = args.n_embd * 4
+        if not hasattr(args, 'tiny_att_layer') or args.tiny_att_layer == 0:
+            args.tiny_att_layer = -1
+        if not hasattr(args, 'tiny_att_dim') or args.tiny_att_dim == 0:
+            args.tiny_att_dim = -1
+        if not hasattr(args, 'emb_id'):
+            args.emb_id = 1
+        if not hasattr(args, 'bi_rwkv'):
+            args.bi_rwkv = True
+        assert args.n_embd % 32 == 0
+        assert args.dim_att % 32 == 0
+        assert args.dim_ffn % 32 == 0
+
+        self.emb = nn.Embedding(args.vocab_size, args.n_embd)
+        if args.bi_rwkv:
+            Block.forward = bi_block_forward
+            RWKV_Tmix_x060.forward = bi_att_forward
+        self.blocks = nn.ModuleList([Block(args, i) for i in range(args.n_layer)])
+        self.ln_out = nn.LayerNorm(args.n_embd)
+        self.emb_id = args.emb_id
+
+    
+    def forward(self, idx,state=None):
+        with torch.no_grad():
+            args = self.args
+            T = idx.size()[0]
+            is_last_chunk = True if idx[-1] == self.emb_id else False
+            args.is_last_chunk = is_last_chunk
+            assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
+            NUM_STATES = 5
+            if state is None:
+                state = [None] * args.n_layer * NUM_STATES
+                for i in range(args.n_layer): # state: 0=att_xx 1=att_kv 2=att_xx_rev 3=att_kv_rev 4=ffn_xx
+                    state[i*NUM_STATES+0] = torch.zeros(args.n_embd, dtype=torch.float, requires_grad=False, device=idx.device).contiguous()
+                    state[i*NUM_STATES+1] = torch.zeros((args.n_head, args.n_att//args.n_head, args.n_att//args.n_head), dtype=torch.float, requires_grad=False, device=idx.device).contiguous()
+                    state[i*NUM_STATES+2] = torch.zeros(args.n_embd, dtype=torch.float, requires_grad=False, device=idx.device).contiguous()
+                    state[i*NUM_STATES+3] = torch.zeros((args.n_head, args.n_att//args.n_head, args.n_att//args.n_head), dtype=torch.float, requires_grad=False, device=idx.device).contiguous()
+                    state[i*NUM_STATES+4] = torch.zeros(args.n_embd, dtype=torch.float, requires_grad=False, device=idx.device).contiguous()
+            x = self.emb(idx)
+            x_emb = x
+            layer_id = 0
+            if args.tiny_att_dim > 0:
+                for block in self.blocks:
+                    x,x_x,state_kv,x_x_rev,state_kv_rev,state_ffn = block(x,state[layer_id*NUM_STATES:layer_id*NUM_STATES+NUM_STATES], x_emb)
+                    state[layer_id*NUM_STATES+0] = x_x
+                    state[layer_id*NUM_STATES+1] = state_kv
+                    state[layer_id*NUM_STATES+2] = x_x_rev
+                    state[layer_id*NUM_STATES+3] = state_kv_rev
+                    state[layer_id*NUM_STATES+4] = state_ffn
+                    layer_id += 1
+            else:
+                for block in self.blocks:
+                    x,x_x,state_kv,x_x_rev,state_kv_rev,state_ffn = block(x,state[layer_id*NUM_STATES:layer_id*NUM_STATES+NUM_STATES])
+                    state[layer_id*NUM_STATES+0] = x_x
+                    state[layer_id*NUM_STATES+1] = state_kv
+                    state[layer_id*NUM_STATES+2] = x_x_rev
+                    state[layer_id*NUM_STATES+3] = state_kv_rev
+                    state[layer_id*NUM_STATES+4] = state_ffn
+                    layer_id += 1
+            x = self.ln_out(x)
+            return x[-1,:],state
 
 class RwkvForSequenceEmbedding(torch.nn.Module):
 

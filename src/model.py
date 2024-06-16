@@ -1,7 +1,6 @@
 ########################################################################################################
 # The RWKV Language Model - https://github.com/BlinkDL/RWKV-LM
 ########################################################################################################
-import functools
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 import os, math, gc, importlib
@@ -16,110 +15,10 @@ from pytorch_lightning.strategies import DeepSpeedStrategy
 if importlib.util.find_spec('deepspeed'):
     import deepspeed
     from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
-from torch._lowrank import svd_lowrank
-import bitsandbytes as bnb
 from .infctx_module import *
 from einops import rearrange
 from fla.ops.rwkv6 import chunk_rwkv6, fused_recurrent_rwkv6
-
-LORA_CONFIG = {
-    "r": 0,
-    "alpha": 0,
-    "dropout": 0,
-    "parts": {"att", "ln", "time", "ffn"},
-}
-class LoraLinear(nn.Module):
-
-    def __init__(self, in_features: int, out_features: int, bias: bool):
-        super().__init__()
-
-        self.weight = nn.Parameter(torch.empty((out_features, in_features)))
-        assert bias == False, "Biased LoraLinear not supported"
-
-        r, alpha, dropout = LORA_CONFIG["r"], LORA_CONFIG[
-            "alpha"], LORA_CONFIG["dropout"]
-        self.lora_A = nn.Parameter(torch.empty(r, in_features))
-        self.lora_B = nn.Parameter(torch.empty(out_features, r))
-        self.lora_dropout = nn.Dropout(dropout)
-        self.scaling = alpha / r
-        self.r = r
-        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
-        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
-        nn.init.zeros_(self.lora_B)
-        self.pissa = False
-        self.is_quant = False
-
-    def pissa_init(self, svd_niter):
-
-        self.pissa = True
-        Ur, Sr, Vr = svd_lowrank(self.weight.data, self.r, niter=svd_niter)
-        Vhr = Vr.t()
-        lora_A = torch.diag(torch.sqrt(Sr)) @ Vhr
-        lora_B = Ur @ torch.diag(torch.sqrt(Sr))
-        self.lora_A.data = lora_A
-        self.lora_B.data = lora_B
-        self.weight.data = self.weight.data - lora_B @ lora_A
-    def quant(self, quant_type):
-        self.is_quant = True
-        self.quant_type = quant_type
-        if self.quant_type=='4bit':
-            self.weight.data, self.qstate= bnb.functional.quantize_4bit((self.weight.data).to('cuda'))
-        elif self.quant_type=='nf4':
-            self.weight.data, self.qstate= bnb.functional.quantize_nf4((self.weight.data).to('cuda'))
-        elif self.quant_type=='fp4':
-            self.weight.data, self.qstate= bnb.functional.quantize_fp4((self.weight.data).to('cuda'))
-
-    def forward(self, x):
-
-        if self.is_quant:
-            if self.quant_type=='4bit':
-                if self.pissa:
-                    return (
-                        F.linear(x, bnb.functional.dequantize_4bit(self.weight.data,quant_state=self.qstate).to(torch.bfloat16)) + 
-                        F.linear(F.linear(x, self.lora_A), self.lora_B))
-                return (
-                    F.linear(x, bnb.functional.dequantize_4bit(self.weight.data,quant_state=self.qstate).to(torch.bfloat16)) + self.scaling *
-                    F.linear(F.linear(self.lora_dropout(x), self.lora_A), self.lora_B)) 
-            elif self.quant_type=='nf4':
-                if self.pissa:
-                    return (
-                        F.linear(x, bnb.functional.dequantize_nf4(self.weight.data,quant_state=self.qstate).to(torch.bfloat16)) + 
-                        F.linear(F.linear(x, self.lora_A), self.lora_B))
-                return (
-                    F.linear(x, bnb.functional.dequantize_nf4(self.weight.data,quant_state=self.qstate).to(torch.bfloat16)) + self.scaling *
-                    F.linear(F.linear(self.lora_dropout(x), self.lora_A), self.lora_B)) 
-            elif self.quant_type=='fp4':
-                if self.pissa:
-                    return (
-                        F.linear(x, bnb.functional.dequantize_fp4(self.weight.data,quant_state=self.qstate).to(torch.bfloat16)) + 
-                        F.linear(F.linear(x, self.lora_A), self.lora_B))
-                return (
-                    F.linear(x, bnb.functional.dequantize_fp4(self.weight.data,quant_state=self.qstate).to(torch.bfloat16)) + self.scaling *
-                    F.linear(F.linear(self.lora_dropout(x), self.lora_A), self.lora_B))  
-
-        if self.pissa:
-            return (
-                F.linear(x, self.weight) + 
-                F.linear(F.linear(x, self.lora_A), self.lora_B))
-        return (
-            F.linear(x, self.weight) + self.scaling *
-            F.linear(F.linear(self.lora_dropout(x), self.lora_A), self.lora_B))  
-
-
-@functools.wraps(LoraLinear)
-def make_linear_att(*args, **kwargs):
-    if "att" in LORA_CONFIG["parts"] and LORA_CONFIG["r"] > 0:
-        return LoraLinear(*args, **kwargs)
-    else:
-        return nn.Linear(*args, **kwargs)
-
-
-@functools.wraps(LoraLinear)
-def make_linear_ffn(*args, **kwargs):
-    if "ffn" in LORA_CONFIG["parts"] and LORA_CONFIG["r"] > 0:
-        return LoraLinear(*args, **kwargs)
-    else:
-        return nn.Linear(*args, **kwargs)
+from .rwkvLinear import make_linear_att, make_linear_ffn, LORA_CONFIG
 
 try:
     print('RWKV_MY_TESTING', os.environ["RWKV_MY_TESTING"])
@@ -138,17 +37,17 @@ if os.environ["RWKV_JIT_ON"] == "1":
 
 
 ########################################################################################################
-# CUDA Kernel s
+# CUDA Kernel
 ########################################################################################################
-if "WKV" in os.environ and os.environ["WKV"] == 'fla':
+if os.environ["WKV"] == 'fla':
     if 'x060' in os.environ["RWKV_MY_TESTING"]:
         if os.environ["RWKV_TRAIN_TYPE"] == 'infctx' and 'x060' in os.environ["RWKV_MY_TESTING"]:
             def RUN_CUDA_RWKV6_STATE(B, T, C, H, r, k, v, w, u, s):
                 r = rearrange(r, 'b l (h d) -> b h l d', h = H)
                 k = rearrange(k, 'b l (h d) -> b h l d', h = H)
                 v = rearrange(v, 'b l (h d) -> b h l d', h = H)
-                w = rearrange(-torch.exp(w), 'b l (h d) -> b h l d', h = H).clamp(-4, 0)
-                o, state = chunk_rwkv6(r, k, v, w, u=u, initial_state=s, output_final_state=True)
+                w = rearrange(-torch.exp(w), 'b l (h d) -> b h l d', h = H)
+                o, state = chunk_rwkv6(r, k, v, w, u=u, scale=1., initial_state=s, output_final_state=True)
                 x = rearrange(o, 'b h l d -> b l (h d)')
                 return x, state
         elif os.environ["RWKV_TRAIN_TYPE"] == 'states':
@@ -156,8 +55,9 @@ if "WKV" in os.environ and os.environ["WKV"] == 'fla':
                 r = rearrange(r, 'b l (h d) -> b h l d', h = H)
                 k = rearrange(k, 'b l (h d) -> b h l d', h = H)
                 v = rearrange(v, 'b l (h d) -> b h l d', h = H)
-                w = rearrange(-torch.exp(w), 'b l (h d) -> b h l d', h = H).clamp(-4, 0)
-                o,_ = chunk_rwkv6(r, k, v, w, u=u, initial_state=s, output_final_state=False)
+                w = rearrange(-torch.exp(w), 'b l (h d) -> b h l d', h = H)
+                s = s.transpose(1, 2).expand(B,*s.shape)
+                o,_ = chunk_rwkv6(r, k, v, w, u=u, scale=1., initial_state=s, output_final_state=False)
                 x = rearrange(o, 'b h l d -> b l (h d)')
                 return x
         else:
@@ -165,8 +65,8 @@ if "WKV" in os.environ and os.environ["WKV"] == 'fla':
                 r = rearrange(r, 'b l (h d) -> b h l d', h = H)
                 k = rearrange(k, 'b l (h d) -> b h l d', h = H)
                 v = rearrange(v, 'b l (h d) -> b h l d', h = H)
-                w = rearrange(-torch.exp(w), 'b l (h d) -> b h l d', h = H).clamp(-4, 0)
-                o,_ = chunk_rwkv6(r, k, v, w, u=u, initial_state=None, output_final_state=False)
+                w = rearrange(-torch.exp(w), 'b l (h d) -> b h l d', h = H)
+                o,_ = chunk_rwkv6(r, k, v, w, u=u, scale=1., initial_state=None, output_final_state=False)
                 x = rearrange(o, 'b h l d -> b l (h d)')
                 return x
 
@@ -285,8 +185,7 @@ else:
                 return WKV_6STATE.apply(B, T, C, H, r, k, v, w, u, s)
 
         else:
-            parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            wkv6_cuda = load(name="wkv6", sources=[f"{parent_dir}/cuda/wkv6_op.cpp", f"{parent_dir}/cuda/wkv6_cuda.cu"],
+            wkv6_cuda = load(name="wkv6", sources=["cuda/wkv6_op.cpp", f"cuda/wkv6_cuda.cu"],
                             verbose=True, extra_cuda_cflags=["-res-usage", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization", f"-D_N_={HEAD_SIZE}", f"-D_T_={int(os.environ['RWKV_CTXLEN'])}"])
                 
             class WKV_6(torch.autograd.Function):
@@ -631,12 +530,12 @@ class RWKV_Tmix_x060_state(MyModule):
             self.time_state = nn.Parameter(torch.zeros(self.n_head, self.head_size, self.head_size))
 
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
-        self.receptance = nn.Linear(args.n_embd, args.dim_att, bias=False)
-        self.key = nn.Linear(args.n_embd, args.dim_att, bias=False)
+        self.receptance = make_linear_att(args.n_embd, args.dim_att, bias=False)
+        self.key = make_linear_att(args.n_embd, args.dim_att, bias=False)
 
-        self.value = nn.Linear(args.n_embd, args.dim_att, bias=False)
-        self.output = nn.Linear(args.dim_att, args.n_embd, bias=False)
-        self.gate = nn.Linear(args.n_embd, args.dim_att, bias=False)
+        self.value = make_linear_att(args.n_embd, args.dim_att, bias=False)
+        self.output = make_linear_att(args.dim_att, args.n_embd, bias=False)
+        self.gate = make_linear_att(args.n_embd, args.dim_att, bias=False)
         self.ln_x = nn.GroupNorm(self.n_head, args.dim_att, eps=(1e-5)*(args.head_size_divisor**2))
 
     @MyFunction
@@ -828,12 +727,12 @@ class RWKV_Tmix_x060_infctx(MyModule):
             #self.time_state = nn.Parameter(torch.zeros(self.n_head, self.head_size, self.head_size))
 
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
-        self.receptance = nn.Linear(args.n_embd, args.dim_att, bias=False)
-        self.key = nn.Linear(args.n_embd, args.dim_att, bias=False)
+        self.receptance = make_linear_att(args.n_embd, args.dim_att, bias=False)
+        self.key = make_linear_att(args.n_embd, args.dim_att, bias=False)
 
-        self.value = nn.Linear(args.n_embd, args.dim_att, bias=False)
-        self.output = nn.Linear(args.dim_att, args.n_embd, bias=False)
-        self.gate = nn.Linear(args.n_embd, args.dim_att, bias=False)
+        self.value = make_linear_att(args.n_embd, args.dim_att, bias=False)
+        self.output = make_linear_att(args.dim_att, args.n_embd, bias=False)
+        self.gate = make_linear_att(args.n_embd, args.dim_att, bias=False)
         self.ln_x = nn.GroupNorm(self.n_head, args.dim_att, eps=(1e-5)*(args.head_size_divisor**2))
 
     @MyFunction
@@ -962,8 +861,9 @@ class Block(nn.Module):
             self.tiny_v = nn.Linear(args.n_embd, args.n_embd, bias=False)
             self.register_buffer("tiny_mask", torch.tril(torch.ones(args.ctx_len, args.ctx_len)))
 
-        self.drop0 = nn.Dropout(p = args.dropout)
-        self.drop1 = nn.Dropout(p = args.dropout)
+        if args.dropout > 0:
+            self.drop0 = nn.Dropout(p = args.dropout)
+            self.drop1 = nn.Dropout(p = args.dropout)
 
     if os.environ["RWKV_TRAIN_TYPE"] == 'infctx':
         def forward(self, x, last_state: BlockState, x_emb=None):
