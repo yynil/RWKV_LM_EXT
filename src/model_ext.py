@@ -893,15 +893,22 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
             negative = batch["negative"]
         else:
             negative = None
-        query_embeddings = self.forward(query)#size is (bs,emb_dim)
-        positive_embeddings = self.forward(positive)#size is (bs,emb_dim)
+        if negative is not None:
+            embeddings = self.forward(torch.cat([query, positive, negative], dim=0))  # size is (3*bs, emb_dim)
+            query_embeddings = embeddings[:batch["query"].size(0)]
+            positive_embeddings = embeddings[batch["query"].size(0):batch["query"].size(0)+batch["positive"].size(0)]
+            negative_embeddings = embeddings[batch["query"].size(0)+batch["positive"].size(0):]
+        else:
+            embeddings = self.forward(torch.cat([query, positive], dim=0))  # size is (2*bs, emb_dim)
+            query_embeddings = embeddings[:batch["query"].size(0)]
+            positive_embeddings = embeddings[batch["query"].size(0):]
+            negative_embeddings = None
         if self.is_in_batch_negative:
             from sentence_transformers import util
             similarity_fct=util.cos_sim
             scores = similarity_fct(query_embeddings, positive_embeddings)*20
             if negative is not None:
                 pairwise_fct = util.pairwise_cos_sim
-                negative_embeddings = self.forward(negative)
                 negative_scores = pairwise_fct(query_embeddings, negative_embeddings).unsqueeze(1)*20#score is (bs,1)
                 scores = torch.cat([scores,negative_scores],dim=1)#scores size is (bs,bs+1)
             labels = torch.arange(0, scores.shape[0], dtype=torch.long).to(scores.device)
@@ -940,7 +947,6 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
             similarity_fct = util.pairwise_cos_sim
             scores = similarity_fct(query_embeddings, positive_embeddings)
             if negative is not None:
-                negative_embeddings = self.forward(negative)
                 scores = torch.cat([scores,similarity_fct(query_embeddings, negative_embeddings)])
                 labels = torch.cat([labels,torch.full((negative_embeddings.shape[0],),-1).to(positive_embeddings.device)])
             
