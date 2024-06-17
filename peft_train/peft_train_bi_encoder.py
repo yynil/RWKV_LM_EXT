@@ -148,7 +148,7 @@ def create_arg_parser():
     parser.add_argument('--strategy', type=str, default='deepspeed_stage_2_offload', help='strategy for distributed training', choices=['deepspeed_stage_2_offload','deepspeed_stage_3_offload'])
 
     #add peft arguments
-    parser.add_argument('--lora_type', type=str, default='lora', help='lora type', choices=['lora','adalora'])
+    parser.add_argument('--lora_type', type=str, default='lora', help='lora type', choices=['lora','adalora','none'])
     parser.add_argument('--target_modules', type=str, nargs='+',default=['ffn.key','ffn.value','ffn.receptance'], help='target modules')
     parser.add_argument('--lora_r',type=int,default=8)
     parser.add_argument('--lora_alpha',type=int,default=32)
@@ -249,18 +249,19 @@ if __name__ == '__main__':
         print(rwkv_base_model)
         inform = rwkv_base_model.load_state_dict(w)
         print(inform)
-        #Configure the peft configuration to inject 
-        lora_config = None
-        if args.lora_type == 'lora':
-            from peft import LoraConfig
-            lora_config = LoraConfig(r=args.lora_r,lora_alpha=args.lora_alpha,target_modules=args.target_modules,lora_dropout=args.lora_dropout)
-        elif args.lora_type == 'adalora':
-            from peft import AdaLoraConfig
-            lora_config = AdaLoraConfig(r=args.lora_r,lora_alpha=args.lora_alpha,target_modules=args.target_modules,lora_dropout=args.lora_dropout)
+        if args.lora_type != 'none':
+            #Configure the peft configuration to inject 
+            lora_config = None
+            if args.lora_type == 'lora':
+                from peft import LoraConfig
+                lora_config = LoraConfig(r=args.lora_r,lora_alpha=args.lora_alpha,target_modules=args.target_modules,lora_dropout=args.lora_dropout)
+            elif args.lora_type == 'adalora':
+                from peft import AdaLoraConfig
+                lora_config = AdaLoraConfig(r=args.lora_r,lora_alpha=args.lora_alpha,target_modules=args.target_modules,lora_dropout=args.lora_dropout)
 
-        #Inject the lora configuration to the model
-        from peft import inject_adapter_in_model
-        rwkv_base_model = inject_adapter_in_model(lora_config,rwkv_base_model,adapter_name='embedding_lora')
+            #Inject the lora configuration to the model
+            from peft import inject_adapter_in_model
+            rwkv_base_model = inject_adapter_in_model(lora_config,rwkv_base_model,adapter_name='embedding_lora')
         print(rwkv_base_model)
         def print_trainable_params(model):
             #count whole model parameters and print trainable parameters' count and percentage

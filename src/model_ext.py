@@ -742,6 +742,17 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
             #return the last token embedding
             x = x[torch.arange(x.size(0)),actual_len]
             return x
+        elif self.pooling_type == 'avg':
+            #x is (bs,seq_len,emb_dim)
+            #actual_len is (bs,) int tensor which indicates the actual length of each sequence
+            #return the average of all token embeddings
+            #mask is [[1,1,1,...,0,0,0],[1,1,1,...,0,0,0],...,[1,1,1,...,0,0,0]] which is used to mask the padding token
+            mask = torch.ones((x.size(0),x.size(1)),device = x.device)
+            col_indices = torch.arange(mask.size(1)).unsqueeze(0).to(mask.device)
+            mask_indices = col_indices >= actual_len.unsqueeze(1)
+            mask[mask_indices] = 0
+            x = torch.sum(x*mask.unsqueeze(-1),dim=1) / actual_len.unsqueeze(1).float()
+            return x.bfloat16()
     def forward(self, idx):
         args = self.rwkvModel.args
         B, T = idx.size()
