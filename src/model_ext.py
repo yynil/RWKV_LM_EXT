@@ -785,6 +785,14 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
             x = self.activation(self.dense(x))
         return x
     
+    @property
+    def deepspeed_offload(self) -> bool:
+        strategy = self.trainer.strategy
+        if isinstance(strategy, DeepSpeedStrategy):
+            cfg = strategy.config["zero_optimization"]
+            return cfg.get("offload_optimizer") or cfg.get("offload_param")
+        return False
+    
     def configure_optimizers(self) :
         args = self.rwkvModel.args
         
@@ -850,18 +858,20 @@ class RwkvForSequenceEmbedding(pl.LightningModule):
                 # return SGD(optim_groups, lr=self.args.lr_init, momentum=0.9, weight_decay=args.weight_decay)
                 return Adam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True,  weight_decay=args.weight_decay, amsgrad=False)
             else:
-                from deepspeed.ops.adam import DeepSpeedCPUAdam
-                return DeepSpeedCPUAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True,  weight_decay=args.weight_decay, amsgrad=False)
-                # return FusedAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True, adam_w_mode=True, amsgrad=False)
+                if self.deepspeed_offload:
+                    from deepspeed.ops.adam import DeepSpeedCPUAdam
+                    return DeepSpeedCPUAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True,  weight_decay=args.weight_decay, amsgrad=False)
+                return FusedAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True, adam_w_mode=True, amsgrad=False)
         else:
             if torch.backends.mps.is_available():
                 from torch.optim import AdamW, Adam,SGD
                 # return SGD(optim_groups, lr=self.args.lr_init, momentum=0.9, weight_decay=0)
                 return Adam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps,  weight_decay=0, amsgrad=False)
             else:
-                from deepspeed.ops.adam import DeepSpeedCPUAdam
-                return DeepSpeedCPUAdam(optim_groups, lr=self.args.lr_init, betas=self.args.betas, eps=self.args.adam_eps, bias_correction=True, weight_decay=0, amsgrad=False)
-                # return FusedAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, adam_w_mode=False, weight_decay=0, amsgrad=False)
+                if self.deepspeed_offload:
+                    from deepspeed.ops.adam import DeepSpeedCPUAdam
+                    return DeepSpeedCPUAdam(optim_groups, lr=self.args.lr_init, betas=self.args.betas, eps=self.args.adam_eps, bias_correction=True, weight_decay=0, amsgrad=False)
+                return FusedAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, adam_w_mode=False, weight_decay=0, amsgrad=False)
     
     def validation_step(self, batch, batch_idx):
         query = batch["query"]#size is (bs,seq_len)
