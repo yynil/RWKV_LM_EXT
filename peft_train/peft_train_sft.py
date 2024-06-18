@@ -155,6 +155,8 @@ def create_arg_parser():
     parser.add_argument('--peft_checkpoint',type=str,help='peft checkpoint path',default=None)
     parser.add_argument('--skip_steps',type=int,default=0,help='skip steps in the peft checkpoint')
 
+    #add option if use customized train_step
+    parser.add_argument('--custom_train_step',type=bool,default=False,help='use customized train step')
     return parser
 
 def configure_args(args):
@@ -183,7 +185,7 @@ if __name__ == '__main__':
     print(args)
     #print loading data from train_data in red
     import colorama
-    print(colorama.Fore.RED + f'loading data from {args.train_data}')
+    print(colorama.Fore.RED + f'loading data from {args.train_data}'+colorama.Fore.RESET)
     # data_path_list = []
     # for data_path in os.listdir(args.train_data):
     #     if data_path.endswith('_dataset'):
@@ -215,7 +217,65 @@ if __name__ == '__main__':
 
     
     w = load_ckpt_and_parse_args(args.model_file,args)
-   
+    if args.custom_train_step:
+        from torch.nn import functional as F
+        tokenizer_file = 'tokenizer/rwkv_vocab_v20230424.txt'
+        from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
+        tokenizer = TRIE_TOKENIZER(tokenizer_file)
+        import orjson as json
+        def is_subsequence(seq, subseq):
+            len_subseq = len(subseq)
+            windows = seq.unfold(0, len_subseq, 1)
+            return (windows == subseq).all(dim=1).any().item()
+
+        def training_step(self, batch, batch_idx):
+            args = self.args
+            eos_id = 1
+            idx, targets = batch
+            logits = self(idx)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+            #decode logits to ids
+            ids = logits.argmax(dim=-1)
+            valid_ids_mask = torch.not_equal(targets,-100).int()
+            for i in range(targets.size(0)):
+                target = targets[i]
+                mask = valid_ids_mask[i]
+                #get the subsequence of the target tensor
+                first_idx = torch.argmax(mask)
+                last_idx = torch.eq(target,eos_id).int().argmax()
+                decoded_str =tokenizer.decode(target[first_idx:last_idx].detach().tolist())
+                generated_ids = ids[i][first_idx:last_idx]
+                decoded = json.loads(decoded_str)
+                keys = decoded.keys()  
+                num_keys = len(keys)
+                num_values = 0
+                matched_keys = 0
+                matched_values = 0
+                for key in keys:
+                    num_values += len(decoded[key])
+                    key_ids = tokenizer.encode(key)
+                    key_ids = torch.tensor(key_ids,dtype=torch.long)
+                    key_ids = key_ids.to(idx.device)
+                    #test if the key is in the generated_ids
+                    if is_subsequence(generated_ids,key_ids):
+                        matched_keys += 1
+                    for value in decoded[key]:
+                        value_ids = tokenizer.encode(value)
+                        value_ids = torch.tensor(value_ids,dtype=torch.long)
+                        value_ids = value_ids.to(idx.device)
+                        if is_subsequence(generated_ids,value_ids):
+                            matched_values += 1
+                #add loss if the key and value are not matched
+                key_match_loss = (num_keys - matched_keys) * 3 / num_keys if num_keys != 0 else 0
+                value_match_loss = (num_values - matched_values) * 5 / num_values if num_values != 0 else 0
+                key_value_match_loss = key_match_loss + value_match_loss
+                loss += key_value_match_loss
+            return {'loss': loss, 'key_match_loss': key_match_loss, 'value_match_loss': value_match_loss}
+
+        RWKV.training_step = training_step
+        print(colorama.Fore.RED +'use customized training step'+colorama.Fore.RESET)
+    else:
+        print(colorama.Fore.RED +'use default training step'+colorama.Fore.RESET)
 
     if args.train_type == 'lora': 
         args.lora = True
@@ -305,7 +365,7 @@ if __name__ == '__main__':
 
        
         print(model)
-
+    
 
     #Train the model
     # device = "auto"

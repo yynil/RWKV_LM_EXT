@@ -129,6 +129,10 @@ class TrainerCallback(pl.Callback):
                     lll["enc_loss"] = outputs['enc_loss']
                 if 'decoder_loss' in outputs:
                     lll["decoder_loss"] = outputs['decoder_loss']
+                if 'key_match_loss' in outputs:
+                    lll["key_match_loss"] = outputs['key_match_loss']
+                if 'value_match_loss' in outputs:
+                    lll["value_match_loss"] = outputs['value_match_loss']
                 if kt_s > 0:
                     lll["kt/s"] = kt_s
                 trainer.my_wandb.log(lll, step=int(real_step))
