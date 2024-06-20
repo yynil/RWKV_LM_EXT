@@ -8,7 +8,7 @@ parent_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 import sys
 sys.path.append(parent_path)
 print(f'add path: {parent_path} to sys.path')
-os.environ['RWKV_JIT_ON'] = '0'
+os.environ['RWKV_JIT_ON'] = '1'
 os.environ['RWKV_T_MAX'] = '4096'
 os.environ['RWKV_FLOAT_MODE'] = 'bf16'
 os.environ['RWKV_HEAD_SIZE_A'] = '64'
@@ -32,7 +32,16 @@ if os.environ["RWKV_JIT_ON"] == "1":
     MyModule = torch.jit.ScriptModule
     MyFunction = torch.jit.script_method
 
-
+from einops import rearrange
+from fla.ops.rwkv6 import chunk_rwkv6, fused_recurrent_rwkv6
+def RUN_RWKV_6(B, T, C, H, s, r, k, v, w, u):
+    r = rearrange(r, 'b l (h d) -> b h l d', h = H).float()
+    k = rearrange(k, 'b l (h d) -> b h l d', h = H).float()
+    v = rearrange(v, 'b l (h d) -> b h l d', h = H).float()
+    w = rearrange(-torch.exp(w), 'b l (h d) -> b h l d', h = H).float()
+    o, state = chunk_rwkv6(r, k, v, w, u=u, scale=1., initial_state=s, output_final_state=True)
+    x = rearrange(o, 'b h l d -> b l (h d)')
+    return x, state
 ########################################################################################################
 # CUDA Kernel
 ########################################################################################################
@@ -41,90 +50,90 @@ from torch.utils.cpp_extension import load
 
 HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE_A"])
 
-if 'x060' in os.environ["RWKV_MY_TESTING"]:
-    rwkv6 = load(name="rwkv6", sources=[f"{parent_path}/cuda/rwkv6_op.cpp", f"{parent_path}/cuda/rwkv6.cu"],
-                    verbose=True, extra_cuda_cflags=["-res-usage", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization", f"-D_N_={HEAD_SIZE}", f"-D_T_={4096}"])
-    print(f"Loaded RWKV6 CUDA Kernel:{rwkv6}")
-    class RWKV_6(torch.autograd.Function):
-        @staticmethod
-        def forward(ctx, B, T, C, H, state, r, k, v, w, u):
-            with torch.no_grad():
-                assert HEAD_SIZE == C // H
-                ctx.B = B
-                ctx.T = T
-                ctx.C = C
-                ctx.H = H
-                assert state.dtype == torch.float32
-                assert r.is_contiguous()
-                assert k.is_contiguous()
-                assert v.is_contiguous()
-                assert w.is_contiguous()
-                assert u.is_contiguous()
-                eew = torch.exp(-torch.exp(w.float())).contiguous()
+# if 'x060' in os.environ["RWKV_MY_TESTING"]:
+#     rwkv6 = load(name="rwkv6", sources=[f"{parent_path}/cuda/rwkv6_op.cpp", f"{parent_path}/cuda/rwkv6.cu"],
+#                     verbose=True, extra_cuda_cflags=["-res-usage", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization", f"-D_N_={HEAD_SIZE}", f"-D_T_={4096}"])
+#     print(f"Loaded RWKV6 CUDA Kernel:{rwkv6}")
+#     class RWKV_6(torch.autograd.Function):
+#         @staticmethod
+#         def forward(ctx, B, T, C, H, state, r, k, v, w, u):
+#             with torch.no_grad():
+#                 assert HEAD_SIZE == C // H
+#                 ctx.B = B
+#                 ctx.T = T
+#                 ctx.C = C
+#                 ctx.H = H
+#                 assert state.dtype == torch.float32
+#                 assert r.is_contiguous()
+#                 assert k.is_contiguous()
+#                 assert v.is_contiguous()
+#                 assert w.is_contiguous()
+#                 assert u.is_contiguous()
+#                 eew = torch.exp(-torch.exp(w.float())).contiguous()
 
-                y = torch.empty((B, T, C), device=w.device, dtype=r.dtype, memory_format=torch.contiguous_format)
-                if r.dtype == torch.bfloat16:
-                    rwkv6.forward_bf16(B, T, C, H, state, r, k, v, eew, u, y)
-                elif r.dtype == torch.float16:
-                    rwkv6.forward_fp16(B, T, C, H, state, r, k, v, eew, u, y)
-                elif r.dtype == torch.float32:
-                    rwkv6.forward_fp32(B, T, C, H, state, r, k, v, eew, u, y)
-                return y,state
+#                 y = torch.empty((B, T, C), device=w.device, dtype=r.dtype, memory_format=torch.contiguous_format)
+#                 if r.dtype == torch.bfloat16:
+#                     rwkv6.forward_bf16(B, T, C, H, state, r, k, v, eew, u, y)
+#                 elif r.dtype == torch.float16:
+#                     rwkv6.forward_fp16(B, T, C, H, state, r, k, v, eew, u, y)
+#                 elif r.dtype == torch.float32:
+#                     rwkv6.forward_fp32(B, T, C, H, state, r, k, v, eew, u, y)
+#                 return y,state
 
-    def RUN_RWKV_6(B, T, C, H, state, r, k, v, w, u):
-        return RWKV_6.apply(B, T, C, H, state, r, k, v, w, u)
-else:
-    wkv5_cuda = load(name="wkv5", sources=["cuda/wkv5_op.cpp", f"cuda/wkv5_cuda.cu"],
-                    verbose=True, extra_cuda_cflags=["-res-usage", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization", f"-D_N_={HEAD_SIZE}"])
+#     def RUN_RWKV_6(B, T, C, H, state, r, k, v, w, u):
+#         return RWKV_6.apply(B, T, C, H, state, r, k, v, w, u)
+# else:
+#     wkv5_cuda = load(name="wkv5", sources=["cuda/wkv5_op.cpp", f"cuda/wkv5_cuda.cu"],
+#                     verbose=True, extra_cuda_cflags=["-res-usage", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization", f"-D_N_={HEAD_SIZE}"])
         
-    class WKV_5(torch.autograd.Function):
-        @staticmethod
-        def forward(ctx, B, T, C, H, r, k, v, w, u):
-            with torch.no_grad():
-                assert r.dtype == torch.bfloat16
-                assert k.dtype == torch.bfloat16
-                assert v.dtype == torch.bfloat16
-                assert w.dtype == torch.bfloat16
-                assert u.dtype == torch.bfloat16
-                assert HEAD_SIZE == C // H
-                ctx.B = B
-                ctx.T = T
-                ctx.C = C
-                ctx.H = H
-                assert r.is_contiguous()
-                assert k.is_contiguous()
-                assert v.is_contiguous()
-                assert w.is_contiguous()
-                assert u.is_contiguous()
-                ew = (-torch.exp(w.float())).contiguous()
-                eew = (torch.exp(ew)).contiguous()
-                ctx.save_for_backward(r, k, v, eew, ew, u)
-                y = torch.empty((B, T, C), device=r.device, dtype=torch.bfloat16, memory_format=torch.contiguous_format) # .uniform_(-1, 1)
-                wkv5_cuda.forward(B, T, C, H, r, k, v, eew, u, y)
-                return y
+#     class WKV_5(torch.autograd.Function):
+#         @staticmethod
+#         def forward(ctx, B, T, C, H, r, k, v, w, u):
+#             with torch.no_grad():
+#                 assert r.dtype == torch.bfloat16
+#                 assert k.dtype == torch.bfloat16
+#                 assert v.dtype == torch.bfloat16
+#                 assert w.dtype == torch.bfloat16
+#                 assert u.dtype == torch.bfloat16
+#                 assert HEAD_SIZE == C // H
+#                 ctx.B = B
+#                 ctx.T = T
+#                 ctx.C = C
+#                 ctx.H = H
+#                 assert r.is_contiguous()
+#                 assert k.is_contiguous()
+#                 assert v.is_contiguous()
+#                 assert w.is_contiguous()
+#                 assert u.is_contiguous()
+#                 ew = (-torch.exp(w.float())).contiguous()
+#                 eew = (torch.exp(ew)).contiguous()
+#                 ctx.save_for_backward(r, k, v, eew, ew, u)
+#                 y = torch.empty((B, T, C), device=r.device, dtype=torch.bfloat16, memory_format=torch.contiguous_format) # .uniform_(-1, 1)
+#                 wkv5_cuda.forward(B, T, C, H, r, k, v, eew, u, y)
+#                 return y
 
-        @staticmethod
-        def backward(ctx, gy):
-            with torch.no_grad():
-                assert gy.dtype == torch.bfloat16
-                B = ctx.B
-                T = ctx.T
-                C = ctx.C
-                H = ctx.H
-                assert gy.is_contiguous()
-                r, k, v, eew, ew, u = ctx.saved_tensors
-                gr = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format) # .uniform_(-1, 1)
-                gk = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format) # .uniform_(-1, 1)
-                gv = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format) # .uniform_(-1, 1)
-                gw = torch.empty((B, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format) # .uniform_(-1, 1)
-                gu = torch.empty((B, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format) # .uniform_(-1, 1)
-                wkv5_cuda.backward(B, T, C, H, r, k, v, eew, ew, u, gy, gr, gk, gv, gw, gu)
-                gw = torch.sum(gw, 0).view(H, C//H)
-                gu = torch.sum(gu, 0).view(H, C//H)
-                return (None, None, None, None, gr, gk, gv, gw, gu)
+#         @staticmethod
+#         def backward(ctx, gy):
+#             with torch.no_grad():
+#                 assert gy.dtype == torch.bfloat16
+#                 B = ctx.B
+#                 T = ctx.T
+#                 C = ctx.C
+#                 H = ctx.H
+#                 assert gy.is_contiguous()
+#                 r, k, v, eew, ew, u = ctx.saved_tensors
+#                 gr = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format) # .uniform_(-1, 1)
+#                 gk = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format) # .uniform_(-1, 1)
+#                 gv = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format) # .uniform_(-1, 1)
+#                 gw = torch.empty((B, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format) # .uniform_(-1, 1)
+#                 gu = torch.empty((B, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format) # .uniform_(-1, 1)
+#                 wkv5_cuda.backward(B, T, C, H, r, k, v, eew, ew, u, gy, gr, gk, gv, gw, gu)
+#                 gw = torch.sum(gw, 0).view(H, C//H)
+#                 gu = torch.sum(gu, 0).view(H, C//H)
+#                 return (None, None, None, None, gr, gk, gv, gw, gu)
 
-    def RUN_CUDA_RWKV5(B, T, C, H, r, k, v, w, u):
-        return WKV_5.apply(B, T, C, H, r, k, v, w, u)
+#     def RUN_CUDA_RWKV5(B, T, C, H, r, k, v, w, u):
+#         return WKV_5.apply(B, T, C, H, r, k, v, w, u)
 
 ########################################################################################################
 
@@ -273,13 +282,12 @@ class RWKV_Tmix_x060(MyModule):
 
     @MyFunction
     def jit_func(self, x,state_xx):
-        T, C = x.size()
+        B, T, C = x.size()
 
-        xx = torch.cat((state_xx.unsqueeze(0),x[:-1,:])) - x
-
+        xx = torch.cat((state_xx.unsqueeze(1),x[:, :-1,:]),dim=1) - x
         xxx = x + xx * self.time_maa_x
-        xxx = torch.tanh(xxx @ self.time_maa_w1).view(T,5,-1).transpose(0,1)
-        xxx = torch.bmm(xxx, self.time_maa_w2).view(5, T, -1)
+        xxx = torch.tanh(xxx @ self.time_maa_w1).view(B*T, 5, -1).transpose(0, 1)
+        xxx = torch.bmm(xxx, self.time_maa_w2).view(5, B, T, -1)
         mw, mk, mv, mr, mg = xxx.unbind(dim=0)
 
         xw = x + xx * (self.time_maa_w + mw)
@@ -307,14 +315,16 @@ class RWKV_Tmix_x060(MyModule):
         x = self.output(x * g)
         return x
 
-    def forward(self, x,state_xx,state_kv):
-        T, C = x.size()
+    def forward(self, x,state_xx,state_kv, mask=None):
+        B, T, C = x.size()
         H = self.n_head
-        xx = x[-1,:]
+        xx = x[:, -1,:]
         r, k, v, g, w = self.jit_func(x,state_xx)
-        x,s = RUN_RWKV_6(1, T, C, H, state_kv.transpose(-1,-2).contiguous(),r, k, v, w, self.time_faaaa)
+        if mask is not None:
+            v = v.mul_(mask.unsqueeze(-1))
+        x,s = RUN_RWKV_6(B, T, C, H, state_kv.transpose(-1,-2).contiguous(),r, k, v, w, self.time_faaaa)
         s = s.transpose(-1,-2)
-        x = self.jit_func_2(x, g).squeeze(0)
+        x = self.jit_func_2(x, g)
         return x,xx,s
 
 ########################################################################################################
@@ -369,14 +379,14 @@ class RWKV_CMix_x060(MyModule):
 
     @MyFunction
     def forward(self, x,state_ffn):
-        xx = torch.cat((state_ffn.unsqueeze(0),x[:-1,:])) - x
+        xx = torch.cat((state_ffn.unsqueeze(1),x[:,:-1,:]),dim=1) - x
         xk = x + xx * self.time_maa_k
         xr = x + xx * self.time_maa_r
 
         k = self.key(xk)
         k = torch.relu(k) ** 2
         kv = self.value(k)
-        return (torch.sigmoid(self.receptance(xr)) * kv).squeeze(0),x[-1,:]
+        return (torch.sigmoid(self.receptance(xr)) * kv),x[:,-1,:]
 
 ########################################################################################################
 
@@ -456,21 +466,27 @@ class Block(nn.Module):
             self.drop0 = nn.Dropout(p = args.dropout)
             self.drop1 = nn.Dropout(p = args.dropout)
         
-    def forward(self, x,state, x_emb=None):
+    def forward(self, x,state, x_emb=None, mask=None):
         args = self.args
-        T, C = x.size()
+        B, T, C = x.size()
         if self.layer_id == 0:
             x = self.ln0(x)
             if args.my_pos_emb > 0:
                 pos_emb = (self.pos_emb_x + self.pos_emb_y).reshape(T+1, -1)[:-1,:]
                 x = x + pos_emb
-
+        
         if self.layer_id == 0 and args.pre_ffn > 0:
             x = x + self.ffnPre(self.ln1(x))
         else:
-            x_,x_x,state_kv = self.att(self.ln1(x),state[0],state[1])
+            ln1x = self.ln1(x)
+            if mask is not None:
+                ln1x = ln1x.mul_(mask.unsqueeze(-1))
+            x_,x_x,state_kv = self.att(ln1x,state[0],state[1],mask)
             x = x + x_
-        x_,state_ffn = self.ffn(self.ln2(x),state[2])
+        ln2x = self.ln2(x)
+        if mask is not None:
+            ln2x = ln2x.mul_(mask.unsqueeze(-1))
+        x_,state_ffn = self.ffn(ln2x,state[2])
         x = x + x_
 
         if args.tiny_att_dim > 0 and self.layer_id == args.tiny_att_layer:
@@ -531,30 +547,30 @@ class RWKV(torch.nn.Module):
             self.drop0 = nn.Dropout(p = args.dropout)
 
 
-    def forward(self, idx,state=None):
+    def forward(self, idx,state=None, mask=None):
         with torch.no_grad():
             args = self.args
-            T = idx.size()[0]
+            B, T = idx.shape
             assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
             if state is None:
                 state = [None] * args.n_layer * 3
                 for i in range(args.n_layer): # state: 0=att_xx 1=att_kv 2=ffn_xx
-                    state[i*3+0] = torch.zeros(args.n_embd, dtype=torch.float, requires_grad=False, device=idx.device).contiguous()
-                    state[i*3+1] = torch.zeros((args.n_head, args.n_att//args.n_head, args.n_att//args.n_head), dtype=torch.float, requires_grad=False, device=idx.device).contiguous()
-                    state[i*3+2] = torch.zeros(args.n_embd, dtype=torch.float, requires_grad=False, device=idx.device).contiguous()
+                    state[i*3+0] = torch.zeros(B, args.n_embd, dtype=torch.float, requires_grad=False, device=idx.device).contiguous()
+                    state[i*3+1] = torch.zeros((B, args.n_head, args.n_att//args.n_head, args.n_att//args.n_head), dtype=torch.float, requires_grad=False, device=idx.device).contiguous()
+                    state[i*3+2] = torch.zeros(B, args.n_embd, dtype=torch.float, requires_grad=False, device=idx.device).contiguous()
             x = self.emb(idx)
             x_emb = x
             layer_id = 0
             if args.tiny_att_dim > 0:
                 for block in self.blocks:
-                    x,x_x,state_kv,state_ffn = block(x,state[layer_id*3:layer_id*3+3], x_emb)
+                    x,x_x,state_kv,state_ffn = block(x,state[layer_id*3:layer_id*3+3], x_emb, mask=mask)
                     state[layer_id*3+0] = x_x
                     state[layer_id*3+1] = state_kv
                     state[layer_id*3+2] = state_ffn
                     layer_id += 1
             else:
                 for block in self.blocks:
-                    x,x_x,state_kv,state_ffn = block(x,state[layer_id*3:layer_id*3+3])
+                    x,x_x,state_kv,state_ffn = block(x,state[layer_id*3:layer_id*3+3], mask=mask)
                     state[layer_id*3+0] = x_x
                     state[layer_id*3+1] = state_kv
                     state[layer_id*3+2] = state_ffn
@@ -579,7 +595,7 @@ class RWKV(torch.nn.Module):
             else:
                 x = self.head(x)
 
-            return x[-1,:],state
+            return x[:, -1,:],state
         
 def bi_block_forward(self, x,state, x_emb=None):
     args = self.args
@@ -1273,7 +1289,73 @@ def generate(model, ctx,tokenizer, token_count=100, args=PIPELINE_ARGS(), callba
                 out_str += tmp
                 out_last = i + 1
     out_str = tokenizer.decode(all_tokens)
-    return out_str   
+    return out_str 
+
+def sample_bsz(logits, temperature=1.0, top_p=0.5, top_k=0):
+    probs = F.softmax(logits.float(), dim=-1)
+    top_k = int(top_k)
+    sorted_probs, sorted_ids = torch.sort(probs, descending=True, dim=-1)
+    cumulative_probs = torch.cumsum(sorted_probs, dim=-1).cpu().numpy()
+    cutoff = sorted_probs[torch.arange(probs.shape[0]),np.argmax(cumulative_probs > top_p,1)]
+    probs[probs < cutoff.unsqueeze(1)] = 0
+    if top_k < len(probs) and top_k > 0:
+        probs[sorted_ids[top_k:]] = 0
+    if temperature != 1.0:
+        probs = probs ** (1.0 / temperature)
+    out = torch.multinomial(probs, num_samples=1)[:, 0]
+    out = out.unsqueeze(1).cpu()
+    return out  
+
+def gen_bsz(model, tokens, tokenizer, token_count=100, args=PIPELINE_ARGS(), callback=None, state=None, mask=None,device='cuda',repetition_penalty=1.0):
+    def decode_bsz(tokenizer, x):
+        list = []
+        for i in x:
+            i = [int(i)]
+            t = tokenizer.decode(i)
+            list.append(t)
+        return np.array(list, dtype='U')
+    B = tokens.shape[0]
+    all_str = {}
+    all_state = {}
+    set_n = np.arange(B)
+    out_np = np.empty((B,), dtype='U')
+    for i in range(token_count):
+        # forward & adjust prob.
+        tokens= tokens if i == 0 else token
+        if i!=0:
+            mask=None
+
+        out, state = model.forward(tokens.to(0), state, mask)
+
+        token = sample_bsz(out, temperature=args.temperature, top_p=args.top_p, top_k=args.top_k)
+        # output
+
+        tmp = decode_bsz(tokenizer, token)
+        k = len(tmp)-1
+        while k >= 0:
+            if '\n\n' in tmp[k] or '\ufffd' in tmp[k] or '\n\n' in out_np[k]:
+                all_str[set_n[k]] = out_np[k]
+                state_list = []
+                for t, s in enumerate(state):
+                    state_list.append(s[k])
+                    if k == len(tmp) - 1:
+                        state[t] = state[t][:-1, :]
+                    else:
+                        state[t] = torch.cat((state[t][:k, :], state[t][k + 1:, :]), dim=0)
+                all_state[set_n[k]] = state_list
+                set_n = np.delete(set_n, k, axis=0)
+                out_np = np.delete(out_np, k, axis=0)
+                token = np.delete(token, k, axis=0)
+                tmp = np.delete(tmp, k, axis=0)
+            if len(set_n) == 0:
+                return all_str, all_state
+            k -= 1
+        out_np = np.char.add(out_np, tmp)
+    for k in range(len(tmp)):
+        all_str[set_n[k]] = out_np[k]
+        all_state[set_n[k]] = state_list 
+
+    return all_str, all_state
 
 class BeamHypothesis:
 
@@ -1512,7 +1594,7 @@ def my_print(s):
 
 if __name__ == '__main__':
     torch.backends.cudnn.benchmark = True
-    ckpt = '/media/yueyulin/KINGSTON/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
+    ckpt = '/home/rwkv/JL/model/RWKV-x060-World-7B-v2.1-20240507-ctx4096.pth'
     device = 'cuda'
     dtype = torch.bfloat16
     args = create_empty_args()
@@ -1523,9 +1605,9 @@ if __name__ == '__main__':
     model.eval()
     print(model)
     print(info)
-    gen_args = PIPELINE_ARGS(temperature = 1.0, top_p = 0.8, top_k = 100, # top_k = 0 then ignore
-                        alpha_frequency = 0.25,
-                        alpha_presence = 0.25,
+    gen_args = PIPELINE_ARGS(temperature = 1.0, top_p = 0.0, top_k = 0, # top_k = 0 then ignore
+                        alpha_frequency = 0.0,
+                        alpha_presence = 0.0,
                         alpha_decay = 0.996, # gradually decay the penalty
                         token_ban = [], # ban the generation of some tokens
                         token_stop = [0,2], # stop generation whenever you see any token here
@@ -1533,142 +1615,165 @@ if __name__ == '__main__':
     tokenizer_file = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),'tokenizer','rwkv_vocab_v20230424.txt')
     from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
     tokenizer = TRIE_TOKENIZER(tokenizer_file)
-    ctx = '你是一个编程助手，我会向你提出需求，你需要根据需求编写代码。\nBot:好的，请提出需求。\nUser：编写一个函数，输入一个Shape是(B,T,C)的张量，把一个全零的(C)张量扩展成(B,1,C)，和输入张量相加，最后变成(B,T+1,C)。请用PyTorch实现。\nBot:好的，请稍等。\n'
+    ctx = 'Q: 你能做什么？\n\nA:'
     print(tokenizer.encode(ctx))
     model = model.to(dtype)
     model = model.to(device)
-    with torch.no_grad():
-        with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
-            output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
+    #with torch.no_grad():
+    with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
+        # output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
+        # print(output)
+        tokens1 = torch.tensor([
+        [    0,     0,     0,     0,    82,    59,    33, 10464, 11685,   261,
+            66,    59],
+        [   82,    59,    33, 10464, 15752, 10588, 10373, 10303, 19156,   261,
+            66,    59],
+        [    0,     0,    82,    59,    33, 10464, 13091, 16747, 19156,   261,
+            66,    59]]).to(0)
+        mask = torch.tensor([
+        [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]]).to(0)
+        output,_ = gen_bsz(model, tokens1,tokenizer, token_count=512, args=gen_args,callback=my_print,mask=mask)
         print(output)
 
-    bi_lora_path = '/media/yueyulin/data_4t/models/lora/biencoder/epoch_1_step_430000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
-    cross_lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/cross-encoder/epoch_0_step_500000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
-    fusedEncoder = BiCrossFusionEncoder(model,bi_lora_path,cross_lora_path,tokenizer,dtype=dtype,lora_type='lora',lora_r=8,lora_alpha=32,add_mlp=True,mlp_dim=1024,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],cross_adapter_name='cross_encoder_lora',original_cross_adapter_name='embedding_lora',bi_adapter_name='bi_embedding_lora',original_bi_adapter_name='embedding_lora',sep_token_id = 2)
-    print(fusedEncoder.bi_encoder)
-    print(fusedEncoder.cross_encoder)
-
-    texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
-    outputs = [fusedEncoder.encode_texts(text) for text in texts]
-    print(outputs)
-    from sentence_transformers.util import pairwise_cos_sim
-    for qid in range(len(texts)):
-        query = outputs[qid]
-        for i in range(len(texts)):
-            if i != qid:
-                print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
-
-        print('-----------------------')
-    enable_lora(model,enable=False)
-    with torch.no_grad():
-        with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
-            output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
-        print(output)
-
-    out  = fusedEncoder.cross_encode_texts(texts[0],"北京是中华人民共和国不可分割的一部分")
-    print(out)
-
-    out = fusedEncoder.cross_encode_texts(texts[0],output)
-    print(out)
-
-    out = fusedEncoder.cross_encode_texts(texts[0],texts[1])
-    print(out)
-    out = fusedEncoder.cross_encode_texts(texts[0],texts[2])
-    print(out)
-    out = fusedEncoder.cross_encode_texts(texts[0],texts[3])
-    print(out)
-    out = fusedEncoder.cross_encode_texts(texts[2],texts[3])
-    print(out)
-    print(args)
-if __name__ == '__main__1':
-    torch.backends.cudnn.benchmark = True
-    ckpt = '/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
-    device = 'cuda'
-    dtype = torch.bfloat16
-    args = create_empty_args()
-    w = load_embedding_ckpt_and_parse_args(ckpt, args)
-    print(args)
-    model = RWKV(args)
-    info = model.load_state_dict(w)
-    model.eval()
-    print(info)
-
-    gen_args = PIPELINE_ARGS(temperature = 1.0, top_p = 0.8, top_k = 100, # top_k = 0 then ignore
-                        alpha_frequency = 0.25,
-                        alpha_presence = 0.25,
-                        alpha_decay = 0.996, # gradually decay the penalty
-                        token_ban = [], # ban the generation of some tokens
-                        token_stop = [0,2], # stop generation whenever you see any token here
-                        chunk_len = 256) # split input into chunks to save VRAM (shorter -> slower)
-    tokenizer_file = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),'tokenizer','rwkv_vocab_v20230424.txt')
-    from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
-    tokenizer = TRIE_TOKENIZER(tokenizer_file)
-    ctx = '你是一个编程助手，我会向你提出需求，你需要根据需求编写代码。\nBot:好的，请提出需求。\nUser：编写一个函数，输入一个Shape是(B,T,C)的张量，把一个全零的(C)张量扩展成(B,1,C)，和输入张量相加，最后变成(B,T+1,C)。请用PyTorch实现。\nBot:好的，请稍等。\n'
-    print(tokenizer.encode(ctx))
-    model = model.to(dtype)
-    model = model.to(device)
-    with torch.no_grad():
-        with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
-            output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
-        print(output)
-
-    lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/bi-encoder/add_mlp_in_batch_neg/epoch_0_step_200000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
-    bi_encoder = BiEncoder(model,lora_path,tokenizer,dtype=dtype,lora_type='lora',add_mlp=True,mlp_dim=1024,lora_r=8,lora_alpha=32,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],adapter_name='bi_embedding_lora',original_adapter_name='embedding_lora')
-    print(bi_encoder)
-    embeddings = bi_encoder.encode_texts(output)
-    print(embeddings)
-    print(embeddings.shape)
-
-    texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
-    outputs = [bi_encoder.encode_texts(text) for text in texts]
+        # import time
+        # random_tensor = torch.randint(1, 65530, (4096,), dtype=torch.long).to(device='cuda')
+        # for i in range(100):
+        #     s = time.time()
+        #     outputs, _ = model.forward(random_tensor, None)
+        #     e = time.time()
+        #     torch.cuda.synchronize()
+        #     print(e-s)
 
 
-    print(outputs)
-    from sentence_transformers.util import pairwise_cos_sim
-    for qid in range(len(texts)):
-        query = outputs[qid]
-        for i in range(len(texts)):
-            if i != qid:
-                print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
+#     bi_lora_path = '/media/yueyulin/data_4t/models/lora/biencoder/epoch_1_step_430000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
+#     cross_lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/cross-encoder/epoch_0_step_500000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
+#     fusedEncoder = BiCrossFusionEncoder(model,bi_lora_path,cross_lora_path,tokenizer,dtype=dtype,lora_type='lora',lora_r=8,lora_alpha=32,add_mlp=True,mlp_dim=1024,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],cross_adapter_name='cross_encoder_lora',original_cross_adapter_name='embedding_lora',bi_adapter_name='bi_embedding_lora',original_bi_adapter_name='embedding_lora',sep_token_id = 2)
+#     print(fusedEncoder.bi_encoder)
+#     print(fusedEncoder.cross_encoder)
 
-        print('-----------------------')
+#     texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
+#     outputs = [fusedEncoder.encode_texts(text) for text in texts]
+#     print(outputs)
+#     from sentence_transformers.util import pairwise_cos_sim
+#     for qid in range(len(texts)):
+#         query = outputs[qid]
+#         for i in range(len(texts)):
+#             if i != qid:
+#                 print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
+
+#         print('-----------------------')
+#     enable_lora(model,enable=False)
+#     with torch.no_grad():
+#         with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
+#             output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
+#         print(output)
+
+#     out  = fusedEncoder.cross_encode_texts(texts[0],"北京是中华人民共和国不可分割的一部分")
+#     print(out)
+
+#     out = fusedEncoder.cross_encode_texts(texts[0],output)
+#     print(out)
+
+#     out = fusedEncoder.cross_encode_texts(texts[0],texts[1])
+#     print(out)
+#     out = fusedEncoder.cross_encode_texts(texts[0],texts[2])
+#     print(out)
+#     out = fusedEncoder.cross_encode_texts(texts[0],texts[3])
+#     print(out)
+#     out = fusedEncoder.cross_encode_texts(texts[2],texts[3])
+#     print(out)
+#     print(args)
+# if __name__ == '__main__1':
+#     torch.backends.cudnn.benchmark = True
+#     ckpt = '/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
+#     device = 'cuda'
+#     dtype = torch.bfloat16
+#     args = create_empty_args()
+#     w = load_embedding_ckpt_and_parse_args(ckpt, args)
+#     print(args)
+#     model = RWKV(args)
+#     info = model.load_state_dict(w)
+#     model.eval()
+#     print(info)
+
+#     gen_args = PIPELINE_ARGS(temperature = 1.0, top_p = 0.8, top_k = 100, # top_k = 0 then ignore
+#                         alpha_frequency = 0.25,
+#                         alpha_presence = 0.25,
+#                         alpha_decay = 0.996, # gradually decay the penalty
+#                         token_ban = [], # ban the generation of some tokens
+#                         token_stop = [0,2], # stop generation whenever you see any token here
+#                         chunk_len = 256) # split input into chunks to save VRAM (shorter -> slower)
+#     tokenizer_file = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),'tokenizer','rwkv_vocab_v20230424.txt')
+#     from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
+#     tokenizer = TRIE_TOKENIZER(tokenizer_file)
+#     ctx = '你是一个编程助手，我会向你提出需求，你需要根据需求编写代码。\nBot:好的，请提出需求。\nUser：编写一个函数，输入一个Shape是(B,T,C)的张量，把一个全零的(C)张量扩展成(B,1,C)，和输入张量相加，最后变成(B,T+1,C)。请用PyTorch实现。\nBot:好的，请稍等。\n'
+#     print(tokenizer.encode(ctx))
+#     model = model.to(dtype)
+#     model = model.to(device)
+#     with torch.no_grad():
+#         with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
+#             output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
+#         print(output)
+
+#     lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/bi-encoder/add_mlp_in_batch_neg/epoch_0_step_200000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
+#     bi_encoder = BiEncoder(model,lora_path,tokenizer,dtype=dtype,lora_type='lora',add_mlp=True,mlp_dim=1024,lora_r=8,lora_alpha=32,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],adapter_name='bi_embedding_lora',original_adapter_name='embedding_lora')
+#     print(bi_encoder)
+#     embeddings = bi_encoder.encode_texts(output)
+#     print(embeddings)
+#     print(embeddings.shape)
+
+#     texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
+#     outputs = [bi_encoder.encode_texts(text) for text in texts]
+
+
+#     print(outputs)
+#     from sentence_transformers.util import pairwise_cos_sim
+#     for qid in range(len(texts)):
+#         query = outputs[qid]
+#         for i in range(len(texts)):
+#             if i != qid:
+#                 print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
+
+#         print('-----------------------')
 
    
-    cross_lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/cross-encoder/epoch_0_step_500000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
-    cross_encoder = CrossEncoder(model,cross_lora_path,tokenizer,dtype=dtype,lora_type='lora',lora_r=8,lora_alpha=32,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],adapter_name='cross_encoder_lora',original_adapter_name='embedding_lora',sep_token_id = 2)
-    print(cross_encoder)
-    out  = cross_encoder.encode_texts(texts[0],texts[1])
-    print(out)
+#     cross_lora_path = '/media/yueyulin/KINGSTON/models/rwkv6/lora/cross-encoder/epoch_0_step_500000/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth.pth'
+#     cross_encoder = CrossEncoder(model,cross_lora_path,tokenizer,dtype=dtype,lora_type='lora',lora_r=8,lora_alpha=32,target_modules=['emb','ffn.key','ffn.value','ffn.receptance'],adapter_name='cross_encoder_lora',original_adapter_name='embedding_lora',sep_token_id = 2)
+#     print(cross_encoder)
+#     out  = cross_encoder.encode_texts(texts[0],texts[1])
+#     print(out)
 
-    enable_lora(model,enable=False)
-    with torch.no_grad():
-        with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
-            output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
-        print(output)
+#     enable_lora(model,enable=False)
+#     with torch.no_grad():
+#         with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
+#             output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
+#         print(output)
 
-    texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
-    outputs = [bi_encoder.encode_texts(text) for text in texts]
+#     texts = ['我打算取消订单','我要取消订单','我要退货','我要退款']
+#     outputs = [bi_encoder.encode_texts(text) for text in texts]
 
 
-    print(outputs)
-    from sentence_transformers.util import pairwise_cos_sim
-    for qid in range(len(texts)):
-        query = outputs[qid]
-        for i in range(len(texts)):
-            if i != qid:
-                print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
+#     print(outputs)
+#     from sentence_transformers.util import pairwise_cos_sim
+#     for qid in range(len(texts)):
+#         query = outputs[qid]
+#         for i in range(len(texts)):
+#             if i != qid:
+#                 print(f'{texts[qid]} vs {texts[i]} is {pairwise_cos_sim(query.unsqueeze(0),outputs[i].unsqueeze(0))}')
 
-        print('-----------------------')
+#         print('-----------------------')
 
-    enable_lora(model,enable=False)
-    with torch.no_grad():
-        with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
-            output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
-        print(output)
+#     enable_lora(model,enable=False)
+#     with torch.no_grad():
+#         with torch.autocast(enabled=True,device_type='cuda',dtype=dtype):
+#             output = generate(model, ctx,tokenizer, token_count=512, args=gen_args,callback=my_print)
+#         print(output)
 
-    out  = cross_encoder.encode_texts(texts[0],"北京是中华人民共和国不可分割的一部分")
-    print(out)
+#     out  = cross_encoder.encode_texts(texts[0],"北京是中华人民共和国不可分割的一部分")
+#     print(out)
 
-    out = cross_encoder.encode_texts(texts[0],output)
-    print(out)
-    print(args)
+#     out = cross_encoder.encode_texts(texts[0],output)
+#     print(out)
+#     print(args)
