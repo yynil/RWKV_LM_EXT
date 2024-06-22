@@ -15,6 +15,7 @@ os.environ["RWKV_MY_TESTING"]='x060'
 os.environ['RWKV_CTXLEN'] = '4096'
 os.environ['RWKV_TRAIN_TYPE'] = 'infctx'
 os.environ["WKV"] = 'fla'
+os.environ["WKV"] = ''
 model_ckpt_file = '/media/yueyulin/KINGSTON/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth'
 from src.infctx_module import BlockStateList
 from src.model_ext import RwkvStatesForSequenceEmbedding
