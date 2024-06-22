@@ -72,7 +72,7 @@ class TrainerCallback(pl.Callback):
             if  trainer.global_step == 0: # logging
                 trainer.my_loss_sum = 0
                 trainer.my_loss_count = 0
-                trainer.my_log = open(args.proj_dir + "/train_log.txt", "a")
+                trainer.my_log = open(args.output_dir + "/train_log.txt", "a")
                 trainer.my_log.write(f"NEW RUN {args.my_timestamp}\n{vars(self.args)}\n")
                 try:
                     print(f"\n{trainer.strategy.config}\n")
