@@ -84,6 +84,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--chunk_ctx',type=int,default=256,help='chunk context length')
     parser.add_argument('--cl_temperature',type=float,default=0.1,help='chunk level temperature')
+    parser.add_argument('--skip_steps',type=int,default=0,help='skip steps in the peft checkpoint')
     args = parser.parse_args()
     os.makedirs(args.output_dir,exist_ok=True)
     from datetime import datetime
