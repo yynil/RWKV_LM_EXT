@@ -1124,6 +1124,7 @@ class RwkvStatesForSequenceEmbedding(pl.LightningModule):
                 all_another_scores = torch.cat([all_another_scores, cur_score.unsqueeze(0)], dim=0)
         labels_another = torch.zeros(all_another_scores.size(0)).long().to(embeddings_query.device)
         loss += nn.CrossEntropyLoss()(all_another_scores, labels_another)
+        return loss
     
 class RwkvForSequenceEmbedding(pl.LightningModule):
 
