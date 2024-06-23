@@ -114,14 +114,13 @@ if __name__ == '__main__':
     gc.collect()
     if args.train_type=='state':
         model.requires_grad_(False)
-        freeze=True
-    
-    if args.state_tune or args.train_type=='state':
+        
         for name, module in model.named_modules():
             for pname, param in module.named_parameters():
                 if 'state' in pname :
                     param.requires_grad = True
-            break
+            if 'dense' in name:
+                module.requires_grad_(True)
     #check if cache_dir dataset exists
     train_dataset = None
     try:
