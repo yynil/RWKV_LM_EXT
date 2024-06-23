@@ -14,7 +14,8 @@ from deepspeed.ops.adam import FusedAdam,DeepSpeedCPUAdam
 from sentence_transformers.util import pairwise_cos_sim
 import traceback
 from src.infctx_module import BlockState, BlockStateList, TimeMixState
-from src.model import RUN_CUDA_RWKV6_STATE, Block, RWKV_CMix_x060_infctx, RWKV_ChannelMix, RWKV_Tmix_x060_infctx
+# from src.model import RUN_CUDA_RWKV6_STATE, RWKV_CMix_x060_infctx, RWKV_Tmix_x060_infctx
+from src.model import Block,  RWKV_ChannelMix
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 MyModule = nn.Module
 def __nop(ob):
@@ -801,6 +802,320 @@ class StatesCNN(nn.Module):
         x = x.view(x.size(0), -1)
         x = self.fc(x)
         return x
+    
+class RwkvInstructorForSequenceEmbedding(pl.LightningModule):
+    def __init__(self,args):
+        super().__init__()
+        self.args = args
+        if not hasattr(args, 'dim_att'):
+            args.dim_att = args.n_embd
+        if not hasattr(args, 'dim_ffn'):
+            args.dim_ffn = args.n_embd * 4
+        if not hasattr(args, 'tiny_att_layer'):
+            args.tiny_att_layer = -1
+        if not hasattr(args, 'tiny_att_dim'):
+            args.tiny_att_dim = -1
+        if not hasattr(args, 'emb_id'):
+            args.emb_id = 1
+        if not hasattr(args, 'output_dim'):
+            args.output_dim = 1024
+        if not hasattr(args, 'pooling_type'):
+            args.pooling_type = 'avg'
+        assert args.n_embd % 32 == 0
+        assert args.dim_att % 32 == 0
+        assert args.dim_ffn % 32 == 0
+        H =  args.dim_att // args.head_size_a
+        # RWKV_Tmix_x060_infctx.forward = att_masked_forward
+        self.emb = nn.Embedding(args.vocab_size, args.n_embd)
+        self.blocks = nn.ModuleList([Block(args, i) for i in range(args.n_layer)])
+        self.ln_out = nn.LayerNorm(args.n_embd)
+        self.dense = nn.Linear(args.n_embd, args.output_dim,bias=False)
+        # self.dense = nn.Linear(H*args.head_size_a*args.head_size_a, args.output_dim,bias=False)
+        self.ln_dense = nn.LayerNorm(args.output_dim)
+        self.output_dim = args.output_dim
+        if args.dropout > 0:
+            self.drop0 = nn.Dropout(p = args.dropout)
+        # self.states_cnn = StatesCNN(args.n_layer,H,args.head_size_a,args.output_dim)
+    def generate_init_weight(self):
+        print(
+            f"""
+############################################################################
+#
+# Init model weight (slow for large models)...
+#
+############################################################################
+"""
+        )
+        m = {}
+        for n in self.state_dict():
+            p = self.state_dict()[n]
+            shape = p.shape
+
+            gain = 1.0
+            scale = 1.0
+            print(f'init {n}')
+            if "ln_" in n or ".ln" in n or "time_" in n or "_mask" in n or "pos_emb" in n or '.mask.' in n:
+                if 'ln_x.weight' in n:
+                    layer_scale = (1+int(n.split('.')[1])) / self.args.n_layer
+                    m[n] = (p * 0.0) + (layer_scale ** 0.7)
+                else:
+                    m[n] = p
+            else:
+                if n == "emb.weight":
+                    scale = -1 * self.args.lr_init
+                else:
+                    if shape[0] > shape[1]:
+                        gain = math.sqrt(shape[0] / shape[1])
+
+                    zero = [".att.output.", ".ffn.value.", ".ffn.receptance.", ".ffnPre.value.", ".ffnPre.receptance.", "head_q.", '.oo.', '.rr.']
+
+                    for kk in zero:
+                        if kk in n:
+                            scale = 0
+                    if n == "head.weight":
+                        scale = 0.5
+                    if "head_k." in n:
+                        scale = 0.1
+                    if "head_q." in n:
+                        scale = 0
+
+                print(f"{str(shape[0]).ljust(5)} {str(shape[1]).ljust(5)} {str(scale).ljust(4)} {n}")
+
+                if self.args.accelerator.upper() == "GPU":
+                    m[n] = torch.empty((shape[0], shape[1]), device="cuda")
+                else:
+                    m[n] = torch.empty((shape[0], shape[1]))
+
+                if scale == 0:
+                    nn.init.zeros_(m[n])
+                elif scale < 0:
+                    nn.init.uniform_(m[n], a=scale, b=-scale)
+                else:
+                    nn.init.orthogonal_(m[n], gain=gain * scale)
+
+            m[n] = m[n].cpu()
+            if os.environ["RWKV_FLOAT_MODE"] == "fp16":
+                m[n] = m[n].half()
+            elif os.environ["RWKV_FLOAT_MODE"] == "bf16":
+                m[n] = m[n].bfloat16()
+
+            # if n == "emb.weight":
+            #     print(m[n])
+
+        gc.collect()
+        torch.cuda.empty_cache()
+        return m
+    
+    def pooling(self, x,actual_len):
+        args = self.args
+        if args.pooling_type == 'weightedmean':
+            #x is (bs,seq_len,emb_dim)
+            #actual_len is (bs,) int tensor which indicates the actual length of each sequence
+            #weights is (bs,seq_len) float tensor which indicates the weight of each token, the weight[i] = (i+1)/actual_len[i], the last token embedding is 1 and others are degraded by the distance to the last token 
+            #create a mask to mask the padding token
+            mask = torch.arange(x.size(1),device = x.device) <= actual_len.unsqueeze(1)
+            weights = torch.arange(1,x.size(1)+1,device = x.device).unsqueeze(0).float() / actual_len.unsqueeze(1).float()
+            #mask weights to zero according mask
+            weights = weights * mask.float()
+            #add the sum of token embeddings from 0 to actual len as the final embedding 
+            x = torch.sum(x * weights.unsqueeze(-1),dim=1)
+            x = x / actual_len.unsqueeze(1).float()
+            return x.bfloat16()
+        elif args.pooling_type == 'lasttoken':
+            #x is (bs,seq_len,emb_dim)
+            #actual_len is (bs,) int tensor which indicates the index of last token
+            #return the last token embedding
+            x = x[torch.arange(x.size(0)),actual_len]
+            return x
+        elif args.pooling_type == 'avg':
+            #x is (bs,seq_len,emb_dim)
+            #actual_len is (bs,) int tensor which indicates the actual length of each sequence
+            #return the average of all token embeddings
+            #mask is [[1,1,1,...,0,0,0],[1,1,1,...,0,0,0],...,[1,1,1,...,0,0,0]] which is used to mask the padding token
+            mask = torch.ones((x.size(0),x.size(1)),device = x.device)
+            col_indices = torch.arange(mask.size(1)).unsqueeze(0).to(mask.device)
+            mask_indices = col_indices >= actual_len.unsqueeze(1)
+            mask[mask_indices] = 0
+            x = torch.sum(x*mask.unsqueeze(-1),dim=1) / actual_len.unsqueeze(1).float()
+            return x.bfloat16()
+    
+    def forward(self, idx):
+        args = self.args
+        B, T = idx.size()
+        assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
+
+        x = self.emb(idx)
+        x_emb = x
+
+        if args.dropout > 0:
+            x = self.drop0(x)
+        if args.tiny_att_dim > 0:
+            for block in self.blocks:
+                if args.grad_cp == 1:
+                    x = deepspeed.checkpointing.checkpoint(block, x, x_emb)
+                else:
+                    x = block(x, x_emb)
+        else:
+            for block in self.blocks:
+                if args.grad_cp == 1:
+                    x = deepspeed.checkpointing.checkpoint(block, x)
+                else:
+                    x = block(x)
+
+        x = self.ln_out(x)
+
+        #calculate the idx actual length which is first self.embedding_id
+        idx_actual_len = torch.eq(idx, args.emb_id).int().argmax(-1)
+        x = self.pooling(x,idx_actual_len)
+        x = self.dense(x)
+        x = self.ln_dense(x)
+        return x
+
+    @property
+    def deepspeed_offload(self) -> bool:
+        strategy = self.trainer.strategy
+        if isinstance(strategy, DeepSpeedStrategy):
+            cfg = strategy.config["zero_optimization"]
+            return cfg.get("offload_optimizer") or cfg.get("offload_param")
+        return False
+    
+    def configure_optimizers(self) :
+        args = self.args
+        
+        lr_decay = set()
+        lr_1x = set()
+        lr_2x = set()
+        lr_3x = set()
+        for n, p in self.named_parameters():
+            if p.requires_grad == True:
+                if ("time_mix" in n) and (args.layerwise_lr > 0):
+                    if args.my_pile_stage == 2:
+                        lr_2x.add(n)
+                    else:
+                        lr_1x.add(n)
+                elif ("time_decay" in n) and (args.layerwise_lr > 0):
+                    if args.my_pile_stage == 2:
+                        lr_3x.add(n)
+                    else:
+                        lr_2x.add(n)
+                elif ("time_faaaa" in n) and (args.layerwise_lr > 0):
+                    if args.my_pile_stage == 2:
+                        lr_2x.add(n)
+                    else:
+                        lr_1x.add(n)
+                elif ("time_first" in n) and (args.layerwise_lr > 0):
+                    lr_3x.add(n)
+                elif (len(p.squeeze().shape) >= 2) and (args.weight_decay > 0):
+                    lr_decay.add(n)
+                else:
+                    lr_1x.add(n)
+
+        lr_decay = sorted(list(lr_decay))
+        lr_1x = sorted(list(lr_1x))
+        lr_2x = sorted(list(lr_2x))
+        lr_3x = sorted(list(lr_3x))
+        # print('decay', lr_decay)
+        # print('1x', lr_1x)
+        # print('2x', lr_2x)
+        # print('3x', lr_3x)
+        param_dict = {n: p for n, p in self.named_parameters()}
+        
+        if args.layerwise_lr > 0:
+            if args.my_pile_stage == 2:
+                optim_groups = [
+                    {"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0},
+                    {"params": [param_dict[n] for n in lr_2x], "weight_decay": 0.0, "my_lr_scale": 5.0},# test: 2e-3 / args.lr_init},
+                    {"params": [param_dict[n] for n in lr_3x], "weight_decay": 0.0, "my_lr_scale": 5.0},# test: 3e-3 / args.lr_init},
+                ]
+            else:
+                optim_groups = [
+                    {"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0},
+                    {"params": [param_dict[n] for n in lr_2x], "weight_decay": 0.0, "my_lr_scale": 2.0},
+                    {"params": [param_dict[n] for n in lr_3x], "weight_decay": 0.0, "my_lr_scale": 3.0},
+                ]
+        else:
+            optim_groups = [{"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0}]
+        # print('optim_groups', optim_groups)
+        # print(lr_1x)
+        if args.weight_decay > 0:
+            optim_groups += [{"params": [param_dict[n] for n in lr_decay], "weight_decay": args.weight_decay, "my_lr_scale": 1.0}]
+            if torch.backends.mps.is_available():
+                from torch.optim import AdamW,Adam,SGD
+                # return SGD(optim_groups, lr=self.args.lr_init, momentum=0.9, weight_decay=args.weight_decay)
+                return Adam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True,  weight_decay=args.weight_decay, amsgrad=False)
+            else:
+                if self.deepspeed_offload:
+                    from deepspeed.ops.adam import DeepSpeedCPUAdam
+                    return DeepSpeedCPUAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True,  weight_decay=args.weight_decay, amsgrad=False)
+                return FusedAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True, adam_w_mode=True, amsgrad=False)
+        else:
+            if torch.backends.mps.is_available():
+                from torch.optim import AdamW, Adam,SGD
+                # return SGD(optim_groups, lr=self.args.lr_init, momentum=0.9, weight_decay=0)
+                return Adam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps,  weight_decay=0, amsgrad=False)
+            else:
+                if self.deepspeed_offload:
+                    from deepspeed.ops.adam import DeepSpeedCPUAdam
+                    return DeepSpeedCPUAdam(optim_groups, lr=self.args.lr_init, betas=self.args.betas, eps=self.args.adam_eps, bias_correction=True, weight_decay=0, amsgrad=False)
+                return FusedAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, adam_w_mode=False, weight_decay=0, amsgrad=False)
+    def training_step(self, batch, batch_idx):
+        query = batch["query_input_ids"]#size is (bs,seq_len_q)
+        positive = batch["pos_input_ids"]#size is (bs,seq_len_p)
+        negative = batch["neg_input_ids"]#size is (bs,seq_len_n)
+        concatenated_inputs = torch.cat([query,positive,negative],dim=0)#size is (3*bs,seq_len)
+        concatenated_embeddings = self(concatenated_inputs)#size is (3*bs,output_dim)
+        total_batch_size = concatenated_embeddings.size(0)
+        single_batch_size = total_batch_size // 3
+        embeddings_query = concatenated_embeddings[:single_batch_size]
+        embeddings_pos = concatenated_embeddings[single_batch_size:2*single_batch_size]
+        embeddings_neg = concatenated_embeddings[2*single_batch_size:]
+        # embeddings_query= self(query)#size is (bs,output_dim)
+        # torch.cuda.empty_cache()
+        # embeddings_pos = self(positive)#size is (bs,output_dim)
+        # torch.cuda.empty_cache()
+        # embeddings_neg = self(negative)#size is (bs,output_dim)
+        # torch.cuda.empty_cache()
+
+        num = len(embeddings_query)
+        all_scores = None
+        from torch import nn
+        similarity_fct = nn.CosineSimilarity(dim=-1)
+        for i in range(0, num):
+            anchor_emb = embeddings_query[i].unsqueeze(0)
+            pos_emb = embeddings_pos[i].unsqueeze(0)
+            cur_score = similarity_fct(anchor_emb, pos_emb) / self.args.cl_temperature
+
+            for j in range(0, num):
+                one_neg_emb = embeddings_neg[j].unsqueeze(0)
+                one_neg_score = similarity_fct(anchor_emb, one_neg_emb) / self.args.cl_temperature
+                cur_score = torch.cat([cur_score, one_neg_score], dim=-1)
+            if all_scores is None:
+                all_scores = cur_score.unsqueeze(0)
+            else:
+                all_scores = torch.cat([all_scores, cur_score.unsqueeze(0)], dim=0)
+
+        labels = torch.zeros(all_scores.size(0)).long().to(embeddings_query.device)
+        loss = nn.CrossEntropyLoss()(all_scores, labels)
+
+        all_another_scores = None
+        for i in range(0, num):
+            anchor_emb = embeddings_pos[i].unsqueeze(0)
+            pos_emb = embeddings_query[i].unsqueeze(0)
+            cur_score = similarity_fct(anchor_emb, pos_emb) / self.args.cl_temperature
+
+            for j in range(0, num):
+                if i == j:
+                    continue
+                one_neg_emb = embeddings_query[j].unsqueeze(0)
+                one_neg_score = similarity_fct(anchor_emb, one_neg_emb) / self.args.cl_temperature
+                cur_score = torch.cat([cur_score, one_neg_score], dim=-1)
+            if all_another_scores is None:
+                all_another_scores = cur_score.unsqueeze(0)
+            else:
+                all_another_scores = torch.cat([all_another_scores, cur_score.unsqueeze(0)], dim=0)
+        labels_another = torch.zeros(all_another_scores.size(0)).long().to(embeddings_query.device)
+        loss += nn.CrossEntropyLoss()(all_another_scores, labels_another)
+        return loss
 
 class RwkvStatesForSequenceEmbedding(pl.LightningModule):
     def __init__(self,args):

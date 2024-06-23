@@ -19,13 +19,13 @@ os.environ['RWKV_HEAD_SIZE_A'] = '64'
 os.environ['RWKV_T_MAX'] = '4096'
 os.environ["RWKV_MY_TESTING"]='x060'
 os.environ['RWKV_CTXLEN'] = '4096'
-os.environ['RWKV_TRAIN_TYPE'] = 'infctx'
+os.environ['RWKV_TRAIN_TYPE'] = ''
 os.environ["WKV"] = ''
 import orjson as json
 import torch
 import random
 from datasets import Dataset,DatasetDict
-from src.model_ext import load_ckpt_and_parse_args,RwkvStatesForSequenceEmbedding
+from src.model_ext import load_ckpt_and_parse_args,RwkvStatesForSequenceEmbedding,RwkvInstructorForSequenceEmbedding
 import gc
 from peft_train.Callbacks import TrainerCallback
 instructor_tokenizer = None
@@ -85,7 +85,13 @@ if __name__ == '__main__':
     parser.add_argument('--chunk_ctx',type=int,default=256,help='chunk context length')
     parser.add_argument('--cl_temperature',type=float,default=0.1,help='chunk level temperature')
     parser.add_argument('--skip_steps',type=int,default=0,help='skip steps in the peft checkpoint')
+    parser.add_argument('--max_ctx',type=int,default=512,help='max ctx length')
+    parser.add_argument('--cache_dir',type=str,default='/tmp/cache',help='cache directory for the model')
     args = parser.parse_args()
+    args.real_bsz = max(args.micro_bsz,
+                            args.micro_bsz * torch.cuda.device_count())
+    cache_dir = f'{args.cache_dir}/max_ctx_{args.max_ctx}_real_bsz_{args.real_bsz}'  
+    os.makedirs(cache_dir,exist_ok=True)
     os.makedirs(args.output_dir,exist_ok=True)
     from datetime import datetime
     args.my_timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
@@ -94,102 +100,117 @@ if __name__ == '__main__':
 
     w = load_ckpt_and_parse_args(args.pretrained_model,args)
     print(args)
-    model = RwkvStatesForSequenceEmbedding(args)
+    # model = RwkvStatesForSequenceEmbedding(args)
+    model = RwkvInstructorForSequenceEmbedding(args)
     print(model)
     info = model.load_state_dict(w,strict=False)
     print(info)
     del w
     gc.collect()
-    with open(args.training_data) as f:
-        train_examples_raw = json.loads(f.read())
-    print(f"Loaded {len(train_examples_raw)} training examples")
-    total_train_n = len(train_examples_raw)
-    def get_examples_raw(old_examples_raw, total_n, real_batch_size):
-        examples_raw = []
-        for idx in range(0, total_n, real_batch_size):
-            local_task_name = old_examples_raw[idx]['task_name']
-            cur_batch = []
-            include_batch = True
-            for idx1 in range(idx, min(idx + real_batch_size, total_n)):
-                if not old_examples_raw[idx1]['task_name'] == local_task_name:
-                    print(f'one batch in task {old_examples_raw[idx1]["task_name"]} is skipped')
-                    include_batch = False
-                    break
-                else:
-                    cur_batch.append(old_examples_raw[idx1])
-            if include_batch and len(cur_batch) == real_batch_size:
-                examples_raw.append(cur_batch)
-        return examples_raw
-    args.real_bsz = max(args.micro_bsz,
-                          args.micro_bsz * torch.cuda.device_count())
-    train_examples_raw = get_examples_raw(train_examples_raw, total_train_n, args.real_bsz)
-    random.shuffle(train_examples_raw)
-    train_examples_raw_batch = train_examples_raw
-    train_examples_raw = []
+    #check if cache_dir dataset exists
+    train_dataset = None
+    try:
+        from datasets import load_from_disk
+        train_dataset = load_from_disk(cache_dir)
+        print(f'Loaded cache_dir dataset from {cache_dir}')
+    except Exception as ex:
+        print(ex)
+        print(f'Error in loading {cache_dir} dataset')
+    if train_dataset is None:
+        with open(args.training_data) as f:
+            train_examples_raw = json.loads(f.read())
+        print(f"Loaded {len(train_examples_raw)} training examples")
+        total_train_n = len(train_examples_raw)
+        def get_examples_raw(old_examples_raw, total_n, real_batch_size):
+            examples_raw = []
+            for idx in range(0, total_n, real_batch_size):
+                local_task_name = old_examples_raw[idx]['task_name']
+                cur_batch = []
+                include_batch = True
+                for idx1 in range(idx, min(idx + real_batch_size, total_n)):
+                    if not old_examples_raw[idx1]['task_name'] == local_task_name:
+                        print(f'one batch in task {old_examples_raw[idx1]["task_name"]} is skipped')
+                        include_batch = False
+                        break
+                    else:
+                        cur_batch.append(old_examples_raw[idx1])
+                if include_batch and len(cur_batch) == real_batch_size:
+                    examples_raw.append(cur_batch)
+            return examples_raw
+        
+        train_examples_raw = get_examples_raw(train_examples_raw, total_train_n, args.real_bsz)
+        random.shuffle(train_examples_raw)
+        train_examples_raw_batch = train_examples_raw
+        train_examples_raw = []
 
-    for b in train_examples_raw_batch:
-        train_examples_raw += b
-    print(f'There are {len(train_examples_raw)} pairs to train in total.')
-    print(f'{len(train_examples_raw[0])}')
-    print(train_examples_raw[0])
+        for b in train_examples_raw_batch:
+            train_examples_raw += b
+        print(f'There are {len(train_examples_raw)} pairs to train in total.')
+        print(f'{len(train_examples_raw[0])}')
+        print(train_examples_raw[0])
 
-    def get_dataset(examples_raw):
-        examples = {'query':[],'pos':[],'neg':[],'task_id':[]}
-        task_name_map = {}
-        total_num = len(examples_raw)
-        task_count = 0
-        for i in range(total_num):
-            cur_e = examples_raw[i]
-            for k in ['query','pos','neg']:
-                cur_e[k][-1] = str(cur_e[k][-1])
-                assert cur_e[k][0].startswith('Represent ') or cur_e[k][0]==''
-                examples[k].append("".join(cur_e[k]))
-            if not cur_e['task_name'] in task_name_map:
-                task_name_map[cur_e['task_name']] = task_count
-                task_count += 1
-            examples['task_id'].append(task_name_map[cur_e['task_name']])
-        return examples
+        def get_dataset(examples_raw):
+            examples = {'query':[],'pos':[],'neg':[],'task_id':[]}
+            task_name_map = {}
+            total_num = len(examples_raw)
+            task_count = 0
+            for i in range(total_num):
+                cur_e = examples_raw[i]
+                for k in ['query','pos','neg']:
+                    cur_e[k][-1] = str(cur_e[k][-1])
+                    assert cur_e[k][0].startswith('Represent ') or cur_e[k][0]==''
+                    examples[k].append("".join(cur_e[k]))
+                if not cur_e['task_name'] in task_name_map:
+                    task_name_map[cur_e['task_name']] = task_count
+                    task_count += 1
+                examples['task_id'].append(task_name_map[cur_e['task_name']])
+            return examples
 
-    train_raw_datasets = DatasetDict({'train':Dataset.from_dict(get_dataset(train_examples_raw))})
+        train_raw_datasets = DatasetDict({'train':Dataset.from_dict(get_dataset(train_examples_raw))})
 
-    column_names = train_raw_datasets["train"].column_names
-    from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
+        column_names = train_raw_datasets["train"].column_names
+        from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
 
-    
-    def preprocess_function(examples):
-        global instructor_tokenizer
-        all_tokenized = {'query_input_ids':[],'pos_input_ids':[],'neg_input_ids':[]}
-        if instructor_tokenizer is None:
-            instructor_tokenizer = TRIE_TOKENIZER(args.tokenizer)
-        for key in ['query','pos','neg']:
-            input_ids = [
-                instructor_tokenizer.encode(example) 
-                    for example 
-                        in examples[key]]
-            all_tokenized[f'{key}_input_ids'] = input_ids
-        all_tokenized['task_id'] = examples['task_id']
-        return all_tokenized
+        
+        def preprocess_function(examples):
+            global instructor_tokenizer
+            all_tokenized = {'query_input_ids':[],'pos_input_ids':[],'neg_input_ids':[]}
+            if instructor_tokenizer is None:
+                instructor_tokenizer = TRIE_TOKENIZER(args.tokenizer)
+            for key in ['query','pos','neg']:
+                input_ids = [
+                    instructor_tokenizer.encode(example) 
+                        for example 
+                            in examples[key]]
+                all_tokenized[f'{key}_input_ids'] = input_ids
+            all_tokenized['task_id'] = examples['task_id']
+            return all_tokenized
 
-    train_dataset = train_raw_datasets["train"]
-    train_dataset = train_dataset.map(
-            preprocess_function,
-            batched=True,
-            num_proc=4,
-            remove_columns=column_names,
-            desc="Running tokenizer on train dataset",
-        )
-    print(train_dataset)
-    print(train_dataset[0])
+        train_dataset = train_raw_datasets["train"]
+        train_dataset = train_dataset.map(
+                preprocess_function,
+                batched=True,
+                num_proc=4,
+                remove_columns=column_names,
+                desc="Running tokenizer on train dataset",
+            )
+        print(train_dataset)
+        print(train_dataset[0])
+        #save it to cache_dir
+        print(f'Saving train_dataset to {cache_dir}')
+        train_dataset.save_to_disk(cache_dir)
 
     from torch.utils.data import DataLoader
     pad_id = 0
     eos_id = 1
+    MAX = 511
     def pad(batch):
         data = []
-        max_len = max([len(x) for x in batch])+1
         for x in batch:
+            x.extend([pad_id]*(MAX-len(x)))
+            if len(x) > MAX:
+                x = x[:MAX]
             x.append(eos_id)
-            x.extend([pad_id]*(max_len-len(x)))
             data.append(x)
         return data
     def padding_fn(batch):
