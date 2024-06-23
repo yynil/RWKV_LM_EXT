@@ -91,6 +91,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     args.real_bsz = max(args.micro_bsz,
                             args.micro_bsz * torch.cuda.device_count())
+    args.model_file = args.pretrained_model
     cache_dir = f'{args.cache_dir}/max_ctx_{args.max_ctx}_real_bsz_{args.real_bsz}'  
     os.makedirs(cache_dir,exist_ok=True)
     os.makedirs(args.output_dir,exist_ok=True)
