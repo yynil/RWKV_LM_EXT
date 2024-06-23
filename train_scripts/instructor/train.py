@@ -97,6 +97,7 @@ if __name__ == '__main__':
     args.my_timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     args.run_name = f'{args.run_name}-{args.my_timestamp}'
     args.betas = [args.beta1,args.beta2]
+    args.trainable_dir_output = f'{args.output_dir}/{args.my_timestamp}'
 
     w = load_ckpt_and_parse_args(args.pretrained_model,args)
     print(args)
