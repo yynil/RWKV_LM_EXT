@@ -401,7 +401,7 @@ def bi_att_forward(self,x,rev_idx,mask):
     from src.model import RUN_CUDA_RWKV6
     x = RUN_CUDA_RWKV6(B, T, C, H, r, k, v, w, u=self.time_faaaa)
     rev_x = RUN_CUDA_RWKV6(B, T, C, H, rev_r, rev_k, rev_v, rev_w, u=self.time_faaaa)
-    rev_x = reverse_x(rev_x,rev_idx)*mask.unsqueeze(-1)#ignore unmasked tokens including emb_id
+    rev_x = reverse_x(rev_x,rev_idx)
     x = self.jit_func_2(x+rev_x, g)
     return x
 
