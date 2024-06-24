@@ -88,7 +88,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_ctx',type=int,default=512,help='max ctx length')
     parser.add_argument('--cache_dir',type=str,default='/tmp/cache',help='cache directory for the model')
     parser.add_argument('--pooling_type',type=str,default='avg',help='pooling type for the model')
-    parser.add_argument('--bi_rwkv',type=bool,action='store_true',help='bi rwkv for the model',default=False)
+    parser.add_argument('--bi_rwkv',action='store_true',help='bi rwkv for the model',default=False)
     args = parser.parse_args()
     args.real_bsz = max(args.micro_bsz,
                             args.micro_bsz * torch.cuda.device_count())
