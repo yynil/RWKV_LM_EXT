@@ -19,7 +19,7 @@ os.environ['RWKV_HEAD_SIZE_A'] = '64'
 os.environ['RWKV_T_MAX'] = '4096'
 os.environ["RWKV_MY_TESTING"]='x060'
 os.environ['RWKV_CTXLEN'] = '4096'
-os.environ['RWKV_TRAIN_TYPE'] = 'states'
+os.environ['RWKV_TRAIN_TYPE'] = ''
 os.environ["WKV"] = ''
 import orjson as json
 import torch
@@ -88,9 +88,8 @@ if __name__ == '__main__':
     parser.add_argument('--max_ctx',type=int,default=512,help='max ctx length')
     parser.add_argument('--cache_dir',type=str,default='/tmp/cache',help='cache directory for the model')
     parser.add_argument('--pooling_type',type=str,default='avg',help='pooling type for the model')
+    parser.add_argument('--bi_rwkv',type=bool,action='store_true',help='bi rwkv for the model',default=False)
     args = parser.parse_args()
-    if  os.environ["RWKV_TRAIN_TYPE"]=='states':
-        args.train_type = 'state'
     args.real_bsz = max(args.micro_bsz,
                             args.micro_bsz * torch.cuda.device_count())
     args.model_file = args.pretrained_model
@@ -112,15 +111,7 @@ if __name__ == '__main__':
     print(info)
     del w
     gc.collect()
-    if args.train_type=='state':
-        model.requires_grad_(False)
-        
-        for name, module in model.named_modules():
-            for pname, param in module.named_parameters():
-                if 'state' in pname :
-                    param.requires_grad = True
-            if 'dense' in name:
-                module.requires_grad_(True)
+
     #check if cache_dir dataset exists
     train_dataset = None
     try:

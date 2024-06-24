@@ -826,6 +826,10 @@ class RwkvInstructorForSequenceEmbedding(pl.LightningModule):
         assert args.dim_ffn % 32 == 0
         H =  args.dim_att // args.head_size_a
         # RWKV_Tmix_x060_infctx.forward = att_masked_forward
+        if args.bi_rwkv:
+            Block.forward = bi_block_forward
+            from src.model import RWKV_Tmix_x060
+            RWKV_Tmix_x060.forward = bi_att_forward
         self.emb = nn.Embedding(args.vocab_size, args.n_embd)
         self.blocks = nn.ModuleList([Block(args, i) for i in range(args.n_layer)])
         self.ln_out = nn.LayerNorm(args.n_embd)
@@ -943,24 +947,30 @@ class RwkvInstructorForSequenceEmbedding(pl.LightningModule):
         args = self.args
         B, T = idx.size()
         assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
-
+        if args.bi_rwkv:
+            mask = create_mask(idx,emb_id=args.emb_id)
+            rev_idx = reverse_x_idx(mask,T)
         x = self.emb(idx)
         x_emb = x
 
         if args.dropout > 0:
             x = self.drop0(x)
-        if args.tiny_att_dim > 0:
-            for block in self.blocks:
-                if args.grad_cp == 1:
-                    x = deepspeed.checkpointing.checkpoint(block, x, x_emb)
+        for block in self.blocks:
+            if args.grad_cp == 1:
+                if args.bi_rwkv:
+                    x = deepspeed.checkpointing.checkpoint(block, x, rev_idx,mask)
                 else:
-                    x = block(x, x_emb)
-        else:
-            for block in self.blocks:
-                if args.grad_cp == 1:
                     x = deepspeed.checkpointing.checkpoint(block, x)
+            else:
+                if args.bi_rwkv:
+                    x = block(x,rev_idx,mask)
                 else:
                     x = block(x)
+
+            # if args.grad_cp == 1:
+            #     x = deepspeed.checkpointing.checkpoint(block, x)
+            # else:
+            #     x = block(x)
 
         x = self.ln_out(x)
 
