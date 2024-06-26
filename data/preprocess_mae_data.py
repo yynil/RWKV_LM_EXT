@@ -84,7 +84,7 @@ def create_cci2_dataset(cci2_dir,
     print('seg sentence')
     cci2 = ds.map(sentence_cci2, num_proc=4, remove_columns=["content","id"])
     print('tokenize and seg words')
-    tokenized_cci2 = cci2.map(cci2_tokenize_function, num_proc=1, batched=True, remove_columns=["sentences"])
+    tokenized_cci2 = cci2.map(cci2_tokenize_function, num_proc=4, batched=True, remove_columns=["sentences"])
     print('group lines')
     processed_cci2 = tokenized_cci2.map(cci2_pad_each_line, num_proc=4, batched=True, remove_columns=tokenized_cci2.column_names)
     return processed_cci2
@@ -247,7 +247,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--wiki_dir', type=str,default=None)
     parser.add_argument('--book_dir', type=str,default=None)
-    parser.add_argument('--wiki_zh_dir', type=str,default='/media/yueyulin/data_4t/data/wiki_zh_202311/')
+    parser.add_argument('--wiki_zh_dir', type=str,default=None)
     parser.add_argument('--output_dir', type=str,default='/media/yueyulin/data_4t/data/wikizh_mae_dataset')
     parser.add_argument('--cci2_dir',type=str,default=None)
     parser.add_argument('--tokenizer_file', type=str,default='/home/yueyulin/github/RWKV_LM_EXT/tokenizer/rwkv_vocab_v20230424.txt')
