@@ -82,7 +82,7 @@ def create_cci2_dataset(cci2_dir,
     ds = datasets.load_dataset('parquet', data_files=parquet_files)['train']
     print(f'Loaded dataset with {len(ds)} samples')
     print('seg sentence')
-    cci2 = ds.map(sentence_cci2, num_proc=4, remove_columns=["content","id"])
+    cci2 = ds.map(sentence_cci2, num_proc=8, remove_columns=["content","id"])
     print('tokenize and seg words')
     tokenized_cci2 = cci2.map(cci2_tokenize_function, num_proc=4, batched=True, remove_columns=["sentences"])
     print('group lines')
