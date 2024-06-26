@@ -5,7 +5,7 @@ sys.path.append(parent_dir)
 print(f'appended {parent_dir} to sys.path')
 import glob
 import os
-os.environ['HF_DATASETS_CACHE'] = '/media/yueyulin/data_4t/cache'
+#os.environ['HF_DATASETS_CACHE'] = '/media/yueyulin/data_4t/cache'
 os.environ['HF_ENDPOINT']='https://hf-mirror.com'
 import datasets
 import random
