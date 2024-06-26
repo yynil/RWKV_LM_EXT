@@ -84,9 +84,9 @@ def create_cci2_dataset(cci2_dir,
     print('seg sentence')
     cci2 = ds.map(sentence_cci2, num_proc=8, remove_columns=["content","id"])
     print('tokenize and seg words')
-    tokenized_cci2 = cci2.map(cci2_tokenize_function, num_proc=4, batched=True, remove_columns=["sentences"])
+    tokenized_cci2 = cci2.map(cci2_tokenize_function, num_proc=8, batched=True, remove_columns=["sentences"])
     print('group lines')
-    processed_cci2 = tokenized_cci2.map(cci2_pad_each_line, num_proc=4, batched=True, remove_columns=tokenized_cci2.column_names)
+    processed_cci2 = tokenized_cci2.map(cci2_pad_each_line, num_proc=8, batched=True, remove_columns=tokenized_cci2.column_names)
     return processed_cci2
 
 def create_wiki_zh_dataset(wiki_dir,
