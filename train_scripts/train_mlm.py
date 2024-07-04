@@ -159,7 +159,7 @@ def create_arg_parser():
 
 def configure_args(args):
     args.betas = (args.beta1, args.beta2)
-    args.real_bsz = args.micro_bsz * args.accumulate_grad_batches*args.num_devices
+    args.real_bsz = args.micro_bsz * args.accumulate_grad_batches*args.num_devices*args.num_nodes
     args.my_timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     if args.proj_dir is None:
         args.proj_dir = f'{args.output_dir}/{args.my_timestamp}'
