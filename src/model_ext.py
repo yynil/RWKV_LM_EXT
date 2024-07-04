@@ -138,6 +138,37 @@ def load_ckpt_and_parse_args(ckpt_file, args):
         traceback.print_exc()
         return None
     
+class RwkvForSequenceClassification(pl.LightningModule):
+    def __init__(self,args,num_labels,class_id = 1, pad_id = 0):
+        self.args = args
+        self.num_labels = num_labels
+        self.pad_id = pad_id
+        if not hasattr(args, 'dim_att') or args.dim_att == 0:
+            args.dim_att = args.n_embd
+        if not hasattr(args, 'dim_ffn') or args.dim_ffn == 0:
+            args.dim_ffn = args.n_embd * 4
+        if not hasattr(args, 'tiny_att_layer') or args.tiny_att_layer == 0:
+            args.tiny_att_layer = -1
+        if not hasattr(args, 'tiny_att_dim') or args.tiny_att_dim == 0:
+            args.tiny_att_dim = -1
+        assert args.n_embd % 32 == 0
+        assert args.dim_att % 32 == 0
+        assert args.dim_ffn % 32 == 0
+
+        self.emb = nn.Embedding(args.vocab_size, args.n_embd)
+        # Block.forward = bi_block_forward
+        # from src.model import RWKV_Tmix_x060
+        # RWKV_Tmix_x060.forward = bi_att_forward
+        self.blocks = nn.ModuleList([Block(args, i) for i in range(args.n_layer)])
+        self.ln_out = nn.LayerNorm(args.n_embd)
+        self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
+
+        if args.head_qk > 0:
+            self.head_q = nn.Linear(args.n_embd, args.head_qk, bias=False)
+            self.head_k = nn.Linear(args.n_embd, args.head_qk, bias=False)
+            self.register_buffer("copy_mask", torch.tril(torch.ones(args.ctx_len, args.ctx_len)))
+        self.drop0 = nn.Dropout(p = args.dropout)
+
 class RwkvForClassification(pl.LightningModule):
 
     def __init__(self, rwkvModel, num_labels=1,class_id = 1, pad_id = 0,should_delete_head = True):
@@ -402,7 +433,7 @@ def bi_att_forward(self,x,rev_idx,mask):
     x = RUN_CUDA_RWKV6(B, T, C, H, r, k, v, w, u=self.time_faaaa)
     rev_x = RUN_CUDA_RWKV6(B, T, C, H, rev_r, rev_k, rev_v, rev_w, u=self.time_faaaa)
     rev_x = reverse_x(rev_x,rev_idx)
-    x = self.jit_func_2(x+rev_x, g)
+    x = self.jit_func_2((x+rev_x)/2, g)
     return x
 
 def bi_block_forward(self,x,rev_idx,mask):

@@ -188,7 +188,7 @@ if __name__ == '__main__':
                                   collate_fn=collate_fn
                                   )
 
-    args.epoch_steps = len(train_dataloader)//args.num_devices
+    args.epoch_steps = len(train_dataloader)//(args.num_devices*args.num_nodes)
     
     dev_dataloader = None
 

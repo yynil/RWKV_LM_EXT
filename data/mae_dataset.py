@@ -193,7 +193,7 @@ if __name__ == '__main__':
         print(bag_word_weight.shape)
         break
 
-    collator = partial(mlm_collator, max_seq_length=args.max_length, encoder_mlm_probability=0.3)
+    collator = partial(mlm_collator, max_seq_length=args.max_length, encoder_mlm_probability=0.15)
     dataloader = DataLoader(dataset, batch_size=2, collate_fn=collator)
     for batch in dataloader:
         encoder_input_ids,encoder_labels = batch['encoder_input_ids'],batch['encoder_labels']
