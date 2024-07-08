@@ -33,6 +33,28 @@ def tokenize_chinese(text,tokenizer_file):
         input_ids.extend(ids)
     return input_ids, segment_ids, segments
 detector = None
+from transformers import AutoTokenizer
+def init_tokenizer():
+    global tokenizer
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained('THUDM/glm-4-9b-chat', trust_remote_code=True)
+from harvesttext import HarvestText
+from langdetect import DetectorFactory, lang_detect_exception
+from nltk.tokenize import sent_tokenize
+
+# 初始化语言检测器，确保结果的一致性
+DetectorFactory.seed = 0
+
+def init_language_detector():
+    global ht
+    if ht is None:
+        from harvesttext import HarvestText
+        ht = HarvestText()
+    global detector
+    if detector is None:
+        languages = [Language.ENGLISH, Language.CHINESE]
+        detector = LanguageDetectorBuilder.from_languages(*languages).build()
+
 def create_cci2_dataset(cci2_dir,
                             tokenizer_file,
                             max_seq_length: int,
@@ -42,25 +64,14 @@ def create_cci2_dataset(cci2_dir,
     
     target_length = max_seq_length - 1
     def cci2_tokenize_function(examples):
-        global tokenizer
-        if tokenizer is None:
-            from transformers import AutoTokenizer
-            tokenizer = AutoTokenizer.from_pretrained('THUDM/glm-4-9b-chat', trust_remote_code=True)
-            print(tokenizer)
+        init_tokenizer()
         sentences = []
         for sents in examples['sentences']:
             sentences.append([tokenizer.encode(sent,add_special_tokens=False) for sent in sents])
         return {"input_ids": sentences}
 
     def sentence_cci2(examples):
-        global ht
-        if ht is None:
-            from harvesttext import HarvestText
-            ht = HarvestText()
-        global detector
-        if detector is None:
-            languages = [Language.ENGLISH, Language.CHINESE]
-            detector = LanguageDetectorBuilder.from_languages(*languages).build()
+        init_language_detector()
         lang = detector.detect_language_of(examples["content"])
         if lang == Language.CHINESE:
             sentences = ht.cut_sentences(examples["content"])
