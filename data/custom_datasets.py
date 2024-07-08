@@ -32,7 +32,7 @@ class MyBatchSampler:
     @property
     def sampler(self):
         return self._sampler
-
+    
     def __iter__(self) -> Iterator[List[int]]:
         current_dataset_idx = 0
         rest_batches_in_chunks = [(self.cummulative_sizes[i]-(self.cummulative_sizes[i-1] if i > 0 else 0))//(self.variable_batch_sizes[i]*self.world_size) for i in range(len(self.cummulative_sizes))]

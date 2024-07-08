@@ -154,6 +154,9 @@ def create_arg_parser():
     parser.add_argument('--skip_steps',type=int,default=0,help='skip steps in the peft checkpoint')
 
     parser.add_argument('--mlm_probability', type=float, default=0.3, help='mlm probability')
+    parser.add_argument('--emb_id', type=int, default=151329, help='cls id')
+    parser.add_argument('--mask_id', type=int, default=151330, help='mask id')
+    parser.add_argument('--pad_id', type=int, default=151334, help='pad id')
 
     return parser
 
@@ -180,7 +183,12 @@ if __name__ == '__main__':
     print(colorama.Fore.RED + f'loading data from {args.train_data}')
     from datasets import load_from_disk
     dataset = load_from_disk(args.train_data)
-    collate_fn = partial(mlm_collator, max_seq_length=args.max_seq_length, encoder_mlm_probability=args.mlm_probability) 
+    collate_fn = partial(mlm_collator, 
+                        max_seq_length=args.max_seq_length, 
+                        encoder_mlm_probability=args.mlm_probability, 
+                        mask_id = args.mask_id,
+                        emb_id = args.emb_id,
+                        pad_id = args.pad_id) 
     train_dataloader = DataLoader(dataset,
                                   num_workers=8,
                                   pin_memory=True, 

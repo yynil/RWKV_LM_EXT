@@ -93,8 +93,8 @@ def create_arg_parser():
     import argparse
     parser = argparse.ArgumentParser(description='peft train BiEncoder')
     parser.add_argument('--train_data', type=str,help='parquet dicrectory containing the training data')
-    parser.add_argument('--train_lengths',type=int,nargs='+',default=[64,128,256,512,1024,2048],help='length of the training data')
-    parser.add_argument('--train_batch_sizes', type=int,nargs='+', default=[64,32,16,8,4,2], help='batch size to train the model')
+    parser.add_argument('--train_lengths',type=int,nargs='+',default=None,help='length of the training data')
+    parser.add_argument('--train_batch_sizes', type=int,nargs='+', default=None, help='batch size to train the model')
     parser.add_argument('--model_file', type=str,default='/media/yueyulin/bigdata/models/rwkv6/RWKV-x060-World-1B6-v2.1-20240328-ctx4096.pth', help='model to be trained,now rwkv5 and rwkv6 are supported')
     parser.add_argument('--output_dir', type=str, default='/media/yueyulin/bigdata/tmp',help='directory to save the trained model')
     parser.add_argument('--num_epochs', type=int, default=150, help='number of epochs to train the model')
@@ -146,7 +146,7 @@ def create_arg_parser():
     
     #add peft arguments
     parser.add_argument('--lora_type', type=str, default='lora', help='lora type', choices=['lora','adalora'])
-    parser.add_argument('--target_modules', type=str, nargs='+',default=['emb','ffn.key','ffn.value','ffn.receptance','att.key','att.value','att.receptance'], help='target modules')
+    parser.add_argument('--target_modules', type=str, nargs='+',default=None, help='target modules')
     parser.add_argument('--lora_r',type=int,default=8)
     parser.add_argument('--lora_alpha',type=int,default=32)
     parser.add_argument('--lora_dropout',type=float,default=0.1)
@@ -154,6 +154,7 @@ def create_arg_parser():
     #add lask peft checkpoint path
     parser.add_argument('--peft_checkpoint',type=str,help='peft checkpoint path',default=None)
     parser.add_argument('--skip_steps',type=int,default=0,help='skip steps in the peft checkpoint')
+    parser.add_argument('--pissa_init_file',type=str,help='pissa init file',default=None)
 
     #add option if use customized train_step
     parser.add_argument('--custom_train_step',type=bool,default=False,help='use customized train step')
@@ -178,6 +179,34 @@ def read_dataset(data_path_list):
     return concatenate_datasets(ds)
 from data.custom_datasets import read_dataset as read_variable_length_dataset
 from data.custom_datasets import MyBatchSampler,pad_and_truncated_according_data
+def load_lora_and_pissa(args, model):
+    if args.peft_checkpoint is not None and os.path.exists(args.peft_checkpoint):
+        w = torch.load(args.peft_checkpoint)
+        info = model.load_state_dict(w,strict=False)
+        print(f'load peft checkpoint from {args.peft_checkpoint}, info: {info}')
+
+    if args.peft_checkpoint is not None:
+        if args.pissa_init_file is None or not os.path.exists(args.pissa_init_file):
+            init_dict = {}
+
+            for name, m in model.named_modules():
+                if hasattr(m, "pissa_init") and callable(getattr(m, "pissa_init")):
+                    m.pissa_init(args.svd_niter)
+                    init_dict[f'{name}.init_lora_A'] = m.lora_A.data
+                    init_dict[f'{name}.init_lora_B'] = m.lora_B.data
+            save_pth = f'{args.proj_dir}/init_pissa.pth' if args.pissa_init_file is None else args.pissa_init_file
+            if not os.path.exists(save_pth):
+                print(f"save init pissa to {save_pth}")
+                torch.save(init_dict, save_pth)
+            else:
+                print(f"{save_pth} exists")
+        else:
+            pissa_init = torch.load(args.pissa_init_file, map_location="cpu")
+            print(f"########## Load PISSA... ##########")
+            for name, m in model.named_modules():
+                if hasattr(m, "pissa_load") and callable(getattr(m, "pissa_load")):
+                    m.pissa_load(pissa_init[f'{name}.init_lora_A'], pissa_init[f'{name}.init_lora_B'])
+
 if __name__ == '__main__':
     parser = create_arg_parser()
     args = parser.parse_args()
@@ -200,16 +229,25 @@ if __name__ == '__main__':
     #     return input_ids, labels
     # train_dataloader = DataLoader(ds,shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True,collate_fn=data_collator)
     # print(train_dataloader)
-    from data.custom_datasets import read_dataset as read_variable_length_dataset,pad_only_according_data
-    ds = read_variable_length_dataset(args.train_data,args.train_lengths)
-    length_of_dataset = len(ds)
-    sum_of_batches = sum([(ds.cummulative_sizes[i]-(ds.cummulative_sizes[i-1] if i > 0 else 0))//args.train_lengths[i] for i in range(len(ds.cummulative_sizes))])
-    print(sum_of_batches)
-    batch_size = length_of_dataset // sum_of_batches
-    print(batch_size)
-    sampler = MyBatchSampler([i for i in range(len(ds))],batch_size,True,ds.cummulative_sizes,args.train_batch_sizes,skipped_batches=args.skip_steps)
-    train_dataloader = DataLoader(ds,batch_sampler=sampler,collate_fn=pad_only_according_data)
-
+    if args.train_lengths is not None:
+        from data.custom_datasets import read_dataset as read_variable_length_dataset,pad_only_according_data
+        ds = read_variable_length_dataset(args.train_data,args.train_lengths)
+        length_of_dataset = len(ds)
+        sum_of_batches = sum([(ds.cummulative_sizes[i]-(ds.cummulative_sizes[i-1] if i > 0 else 0))//args.train_lengths[i] for i in range(len(ds.cummulative_sizes))])
+        print(sum_of_batches)
+        batch_size = length_of_dataset // sum_of_batches
+        print(batch_size)
+        sampler = MyBatchSampler([i for i in range(len(ds))],batch_size,True,ds.cummulative_sizes,args.train_batch_sizes,skipped_batches=args.skip_steps)
+        train_dataloader = DataLoader(ds,batch_sampler=sampler,collate_fn=pad_only_according_data)
+    else:
+        ds = load_from_disk(args.train_data)
+        def data_collator(batch):
+            input_ids = [b['input_ids'] for b in batch]
+            labels = [b['labels'] for b in batch]
+            input_ids = torch.tensor(input_ids)
+            labels = torch.tensor(labels)
+            return input_ids, labels
+        train_dataloader = DataLoader(ds,shuffle=True, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True,collate_fn=data_collator)
 
     args.epoch_steps = len(train_dataloader)//args.num_devices
     
@@ -323,6 +361,13 @@ if __name__ == '__main__':
     elif args.train_type == 'state':
         args.lora = False
         args.state_tune = True
+        if args.target_modules is not None:
+            args.parts = args.target_modules
+            from src.model import LORA_CONFIG
+            LORA_CONFIG['r'] = args.lora_r
+            LORA_CONFIG['alpha'] = args.lora_alpha
+            LORA_CONFIG['dropout'] = args.lora_dropout
+            LORA_CONFIG['parts'] = args.parts
         model = RWKV(args)
         print(model)
         inform = model.load_state_dict(w,strict=False)
@@ -348,25 +393,11 @@ if __name__ == '__main__':
                 param.requires_grad = True
             else:
                 param.requires_grad = False
-        init_dict = {}
-        rank_zero_info(f"########## Init PISSA... ##########")
-
-        for name, m in model.named_modules():
-            if hasattr(m, "pissa_init") and callable(getattr(m, "pissa_init")):
-                m.pissa_init(args.svd_niter)
-                init_dict[f'{name}.init_lora_A'] = m.lora_A.data
-                init_dict[f'{name}.init_lora_B'] = m.lora_B.data
-        save_pth = f'{args.proj_dir}/init_pissa.pth'
-        if not os.path.exists(save_pth):
-            print(f"save init pissa to {save_pth}")
-            torch.save(init_dict, f'{args.proj_dir}/init_pissa.pth')
-        else:
-            print(f"{save_pth} exists")
-
        
         print(model)
     
 
+    load_lora_and_pissa(args, model)
     #Train the model
     # device = "auto"
     args.skip_steps = 0
@@ -390,8 +421,9 @@ if __name__ == '__main__':
     
     print("Current device rank: ", trainer.global_rank)
     print("Total number of devices: ", trainer.world_size)
-    sampler.set_world_size(trainer.world_size)
-    sampler.rank = trainer.global_rank
+    if args.train_lengths is not None:
+        sampler.set_world_size(trainer.world_size)
+        sampler.rank = trainer.global_rank
     trainer.fit(model, 
                 train_dataloader,
                 dev_dataloader)

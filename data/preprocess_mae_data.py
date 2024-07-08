@@ -12,7 +12,8 @@ import random
 import functools
 tokenizer = None
 ht = None
-
+from lingua import Language, LanguageDetectorBuilder
+import nltk
 
 def tokenize_chinese(text,tokenizer_file):
     global tokenizer
@@ -31,7 +32,7 @@ def tokenize_chinese(text,tokenizer_file):
         segment_ids.append(ids)
         input_ids.extend(ids)
     return input_ids, segment_ids, segments
-
+detector = None
 def create_cci2_dataset(cci2_dir,
                             tokenizer_file,
                             max_seq_length: int,
@@ -41,52 +42,63 @@ def create_cci2_dataset(cci2_dir,
     
     target_length = max_seq_length - 1
     def cci2_tokenize_function(examples):
-        sentences_ids = []
-        segments_ids = []
+        global tokenizer
+        if tokenizer is None:
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained('THUDM/glm-4-9b-chat', trust_remote_code=True)
+            print(tokenizer)
+        sentences = []
         for sents in examples['sentences']:
-            for sent in sents:
-                input_ids, segment_ids, _ = tokenize_chinese(sent, tokenizer_file)
-                sentences_ids.append(input_ids)
-                segments_ids.append(segment_ids)
-        return {"input_ids": sentences_ids, "segment_ids": segments_ids}
+            sentences.append([tokenizer.encode(sent,add_special_tokens=False) for sent in sents])
+        return {"input_ids": sentences}
 
     def sentence_cci2(examples):
         global ht
         if ht is None:
             from harvesttext import HarvestText
             ht = HarvestText()
-        sentences = ht.cut_sentences(examples["content"])
+        global detector
+        if detector is None:
+            languages = [Language.ENGLISH, Language.CHINESE]
+            detector = LanguageDetectorBuilder.from_languages(*languages).build()
+        lang = detector.detect_language_of(examples["content"])
+        if lang == Language.CHINESE:
+            sentences = ht.cut_sentences(examples["content"])
+        else:
+            sentences = nltk.sent_tokenize(examples["content"])
         return {"sentences": sentences}
+        # global ht
+        # if ht is None:
+        #     from harvesttext import HarvestText
+        #     ht = HarvestText()
+        # sentences = ht.cut_sentences(examples["content"])
+        # return {"sentences": sentences}
 
     def cci2_pad_each_line(examples):
         blocks = []
-        all_segs = []
-        for sent,segs in zip(examples['input_ids'],examples['segment_ids']):
+        for sents in examples['input_ids']:
             curr_block = []
-            current_segs = []
             curr_tgt_len = target_length if random.random() > short_seq_prob else random.randint(3, target_length)
-            if len(curr_block)+len(sent) >= curr_tgt_len:
+            for sent in sents:
+                if len(curr_block)+len(sent) >= curr_tgt_len:
+                    # curr_block.append(emb_id)
+                    blocks.append(curr_block)
+                    curr_block = []
+                    curr_tgt_len = target_length if random.random() > short_seq_prob \
+                        else random.randint(3, target_length)
+                curr_block.extend(sent)
+            if len(curr_block) > 0:
                 # curr_block.append(emb_id)
                 blocks.append(curr_block)
-                all_segs.append(current_segs)
-                curr_block = []
-                current_segs = []
-                curr_tgt_len = target_length if random.random() > short_seq_prob else random.randint(3, target_length)
-            curr_block.extend(sent)
-            current_segs.extend(segs)
-        if len(curr_block) > 0:
-            # curr_block.append(emb_id)
-            blocks.append(curr_block)
-            all_segs.append(current_segs)
-        return {'token_ids': blocks, 'segment_ids': all_segs}
+        return {'token_ids': blocks}
     ds = datasets.load_dataset('parquet', data_files=parquet_files)['train']
     print(f'Loaded dataset with {len(ds)} samples')
     print('seg sentence')
-    cci2 = ds.map(sentence_cci2, num_proc=8, remove_columns=["content","id"])
+    cci2 = ds.map(sentence_cci2, num_proc=16, remove_columns=["content","id"])
     print('tokenize and seg words')
-    tokenized_cci2 = cci2.map(cci2_tokenize_function, num_proc=8, batched=True, remove_columns=["sentences"])
+    tokenized_cci2 = cci2.map(cci2_tokenize_function, num_proc=16, batched=True, remove_columns=["sentences"])
     print('group lines')
-    processed_cci2 = tokenized_cci2.map(cci2_pad_each_line, num_proc=8, batched=True, remove_columns=tokenized_cci2.column_names)
+    processed_cci2 = tokenized_cci2.map(cci2_pad_each_line, num_proc=16, batched=True, remove_columns=tokenized_cci2.column_names)
     return processed_cci2
 
 def create_wiki_zh_dataset(wiki_dir,
@@ -124,27 +136,21 @@ def create_wiki_zh_dataset(wiki_dir,
 
     def wiki_pad_each_line(examples):
         blocks = []
-        all_segements = []
-        for sents,segments in zip(examples['input_ids'],examples['segment_ids']):
+        for sents in examples['input_ids']:
             curr_block = []
-            current_seg = []
             curr_tgt_len = target_length if random.random() > short_seq_prob else random.randint(3, target_length)
-            for sent,seg in zip(sents,segments):
+            for sent in sents:
                 if len(curr_block)+len(sent) >= curr_tgt_len:
                     # curr_block.append(emb_id)
                     blocks.append(curr_block)
-                    all_segements.append(current_seg)
                     curr_block = []
-                    current_seg = []
                     curr_tgt_len = target_length if random.random() > short_seq_prob \
                         else random.randint(3, target_length)
                 curr_block.extend(sent)
-                current_seg.extend(seg)
             if len(curr_block) > 0:
                 # curr_block.append(emb_id)
                 blocks.append(curr_block)
-                all_segements.append(current_seg)
-        return {'token_ids': blocks, 'segment_ids': all_segements}
+        return {'token_ids': blocks}
     print('seg sentence')
     wiki = ds.map(sentence_wiki, num_proc=16, remove_columns=["title", "text"])
     print('tokenize and seg words')
@@ -153,30 +159,46 @@ def create_wiki_zh_dataset(wiki_dir,
     processed_wiki = tokenized_wiki.map(wiki_pad_each_line, num_proc=16, batched=True, remove_columns=tokenized_wiki.column_names)
     return processed_wiki
 
+
 def create_wiki_dataset(wiki_dir,
                          tokenizer_file,
                          max_seq_length: int,
                          short_seq_prob: float = 0.0):
-    parquet_files = glob.glob(os.path.join(wiki_dir, '*.parquet'))
-    print(f'Found {len(parquet_files)} parquet files in {wiki_dir}')
+    parquet_files = glob.glob(os.path.join(wiki_dir, '**/*.parquet'))
+    arrow_files = glob.glob(os.path.join(wiki_dir, '**/*.arrow'), recursive=True)
+    # all_files = parquet_files + arrow_files
+    # print(f'Found {len(all_files)} parquet files in {wiki_dir}')
+    # print(f'{all_files}')
     ds = datasets.load_dataset('parquet', data_files=parquet_files)['train']
     print(f'Loaded dataset with {len(ds)} samples')
-    import nltk
+    ds_arrow = datasets.load_dataset('arrow', data_files=arrow_files)['train']
+    print(f'Loaded dataset with {len(ds_arrow)} samples')
+    ds = datasets.concatenate_datasets([ds, ds_arrow])
     # nltk.download('punkt')
 
     target_length = max_seq_length - 1
     def wiki_tokenize_function(examples):
         global tokenizer
         if tokenizer is None:
-            from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
-            tokenizer = TRIE_TOKENIZER(tokenizer_file)
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained('THUDM/glm-4-9b-chat', trust_remote_code=True)
+            print(tokenizer)
         sentences = []
         for sents in examples['sentences']:
-            sentences.append([tokenizer.encode(sent) for sent in sents])
+            sentences.append([tokenizer.encode(sent,add_special_tokens=False) for sent in sents])
         return {"input_ids": sentences}
 
     def sentence_wiki(examples):
-        sentences = nltk.sent_tokenize(examples["text"])
+        from langdetect import detect
+        global ht
+        if ht is None:
+            from harvesttext import HarvestText
+            ht = HarvestText()
+        lang = detect(examples["text"])
+        if lang != 'en':
+            sentences = ht.cut_sentences(examples["text"])
+        else:
+            sentences = nltk.sent_tokenize(examples["text"])
         return {"sentences": sentences}
 
     def wiki_pad_each_line(examples):
@@ -198,7 +220,7 @@ def create_wiki_dataset(wiki_dir,
         return {'token_ids': blocks}
     wiki = ds.map(sentence_wiki, num_proc=16, remove_columns=["title", "text"])
     tokenized_wiki = wiki.map(wiki_tokenize_function, num_proc=16, batched=True, remove_columns=["sentences"])
-    processed_wiki = tokenized_wiki.map(wiki_pad_each_line, num_proc=1, batched=True, remove_columns=tokenized_wiki.column_names)
+    processed_wiki = tokenized_wiki.map(wiki_pad_each_line, num_proc=16, batched=True, remove_columns=tokenized_wiki.column_names)
     return processed_wiki
 def creat_book_dataset(book_dir,
                        tokenizer_file,
@@ -258,6 +280,7 @@ if __name__ == '__main__':
         wiki_dataset = create_wiki_dataset(args.wiki_dir, args.tokenizer_file, 512)
         print(wiki_dataset)
         print(wiki_dataset[0])
+        print(wiki_dataset[1015830])
         print('-----------------------------------------')
         ds.append(wiki_dataset)
     if args.book_dir is not None:
