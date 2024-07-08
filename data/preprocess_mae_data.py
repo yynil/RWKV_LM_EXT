@@ -39,11 +39,6 @@ def init_tokenizer():
     if tokenizer is None:
         tokenizer = AutoTokenizer.from_pretrained('THUDM/glm-4-9b-chat', trust_remote_code=True)
 from harvesttext import HarvestText
-from langdetect import DetectorFactory, lang_detect_exception
-from nltk.tokenize import sent_tokenize
-
-# 初始化语言检测器，确保结果的一致性
-DetectorFactory.seed = 0
 
 def init_language_detector():
     global ht
