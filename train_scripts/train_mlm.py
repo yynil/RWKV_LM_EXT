@@ -226,6 +226,6 @@ if __name__ == '__main__':
     print(model)
     print("Current device rank: ", trainer.global_rank)
     print("Total number of devices: ", trainer.world_size)
-    
+    torch.set_float32_matmul_precision('medium')
     trainer.fit(model, 
                 train_dataloader)
