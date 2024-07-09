@@ -68,10 +68,7 @@ def create_cci2_dataset(cci2_dir,
     def sentence_cci2(examples):
         init_language_detector()
         lang = detector.detect_language_of(examples["content"])
-        if lang == Language.CHINESE:
-            sentences = ht.cut_sentences(examples["content"])
-        else:
-            sentences = nltk.sent_tokenize(examples["content"])
+        sentences = ht.cut_sentences(examples["content"])
         return {"sentences": sentences}
         # global ht
         # if ht is None:
