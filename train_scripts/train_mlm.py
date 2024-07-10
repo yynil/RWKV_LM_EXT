@@ -193,7 +193,8 @@ if __name__ == '__main__':
                                   num_workers=8,
                                   pin_memory=True, 
                                   batch_size=args.micro_bsz, 
-                                  collate_fn=collate_fn
+                                  collate_fn=collate_fn,
+                                  shuffle=True
                                   )
 
     args.epoch_steps = len(train_dataloader)//(args.num_devices*args.num_nodes)
