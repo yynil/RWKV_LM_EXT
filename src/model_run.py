@@ -603,7 +603,7 @@ class RwkvEncoder(pl.LightningModule):
         args = self.args
         B, T = idx.size()
         assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
-        mask = create_mask(idx,emb_id=args.emb_id)
+        mask = create_mask(idx,emb_id=args.emb_id,pad_id=args.pad_id)
         rev_idx = reverse_x_idx(mask,T)
         x = self.emb(idx)
         x_emb = x

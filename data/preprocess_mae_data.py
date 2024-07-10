@@ -276,30 +276,31 @@ if __name__ == '__main__':
     parser.add_argument('--output_dir', type=str,default='/media/yueyulin/data_4t/data/wikizh_mae_dataset')
     parser.add_argument('--cci2_dir',type=str,default=None)
     parser.add_argument('--tokenizer_file', type=str,default='/home/yueyulin/github/RWKV_LM_EXT/tokenizer/rwkv_vocab_v20230424.txt')
+    parser.add_argument('--max_seq_length', type=int, default=512)
     args = parser.parse_args()
     
     ds = []
     if args.wiki_dir is not None:
-        wiki_dataset = create_wiki_dataset(args.wiki_dir, args.tokenizer_file, 512)
+        wiki_dataset = create_wiki_dataset(args.wiki_dir, args.tokenizer_file, args.max_seq_length)
         print(wiki_dataset)
         print(wiki_dataset[0])
         print(wiki_dataset[1015830])
         print('-----------------------------------------')
         ds.append(wiki_dataset)
     if args.book_dir is not None:
-        book_dataset = creat_book_dataset(args.book_dir, args.tokenizer_file, 512)
+        book_dataset = creat_book_dataset(args.book_dir, args.tokenizer_file, args.max_seq_length)
         print(book_dataset)
         print(book_dataset[0])
         print('-----------------------------------------')
         ds.append(book_dataset)
     if args.cci2_dir is not None:
-        cci2_dataset = create_cci2_dataset(args.cci2_dir, args.tokenizer_file, 512)
+        cci2_dataset = create_cci2_dataset(args.cci2_dir, args.tokenizer_file, args.max_seq_length)
         print(cci2_dataset)
         print(cci2_dataset[0])
         print('-----------------------------------------')
         ds.append(cci2_dataset)
     if args.wiki_zh_dir is not None:
-        wiki_zh_dataset = create_wiki_zh_dataset(args.wiki_zh_dir, args.tokenizer_file, 512)
+        wiki_zh_dataset = create_wiki_zh_dataset(args.wiki_zh_dir, args.tokenizer_file, args.max_seq_length)
         print(wiki_zh_dataset)
         print(wiki_zh_dataset[0])
         print('-----------------------------------------')
