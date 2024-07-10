@@ -395,14 +395,14 @@ class OneLayerDecoder(pl.LightningModule):
         x = self.ln_out(x)
         x = self.head(x)
         return x
-def create_mask(x,emb_id=1):
+def create_mask(x,emb_id=1,pad_id=0):
     mask = torch.ones(x.size(0),x.size(1)).to(x.device)
-    mask[x == 0] = 0
+    mask[x == pad_id] = 0
     mask[x == emb_id] = 0
     return mask.to(torch.int)
-def create_ot_mask(x,emb_id=1,mask_id=3):
+def create_ot_mask(x,emb_id=1,mask_id=3,pad_id=0):
     mask = torch.ones(x.size(0),x.size(1)).to(x.device)
-    mask[x == 0] = 0
+    mask[x == pad_id] = 0
     mask[x == emb_id] = 0
     mask[x == mask_id] = 0
     return mask.to(torch.int)
@@ -474,6 +474,8 @@ class RwkvEncoder(pl.LightningModule):
             args.mask_id = 3
         if not hasattr(args, 'share_emb'):
             args.share_emb = True
+        if not hasattr(args, 'pad_id'):
+            args.pad_id = 0
         assert args.n_embd % 32 == 0
         assert args.dim_att % 32 == 0
         assert args.dim_ffn % 32 == 0
@@ -577,7 +579,7 @@ class RwkvEncoder(pl.LightningModule):
         args = self.args
         B, T = idx.size()
         assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
-        mask = create_mask(idx,emb_id=args.emb_id)
+        mask = create_mask(idx,emb_id=args.emb_id,pad_id=args.pad_id)
         rev_idx = reverse_x_idx(mask,T)
         x = self.emb(idx)
         x_emb = x
