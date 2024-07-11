@@ -1,6 +1,6 @@
-ckpt = '/media/yueyulin/KINGSTON/models/rwkv6/RWKV-x060-World-7B-v2.1-20240507-ctx4096.pth'
+ckpt = '/media/yueyulin/KINGSTON/models/rwkv6/RWKV-x060-World-7B-v2.1-20240507-ctx4096-YIDUPISSA.pth'
 
-states_file = '/media/yueyulin/data_4t/models/states_tuning/large_lr/trainable_model/epoch_0/RWKV-x060-World-7B-v2.1-20240507-ctx4096.pth.pth'
+states_file = '/home/yueyulin/models/trained/yidu_pissa_states_7B/20240706-000324/trainable_model/epoch_2/RWKV-x060-World-7B-v2.1-20240507-ctx4096-YIDUPISSA.pth.pth'
 tokenizer_file = '/home/yueyulin/github/RWKV_LM_EXT/tokenizer/rwkv_vocab_v20230424.txt'
 
 import os
@@ -55,13 +55,8 @@ gen_args = PIPELINE_ARGS(temperature = 1.0, top_p = 0, top_k = 0, # top_k = 0 th
                         chunk_len = 512)
 cat_char = '🐱'
 bot_char = '🤖'
-instruction ='你是专门进行实体抽取的专家。请从input中抽取出符合schema定义的实体，不存在的实体类型返回空列表。请按照JSON字符串的格式回答。'
-input_text = '{\"input\":\"6 月 17 日，广发证券研报指出，近期大飞机各项进展持续推进。6 月 14 日，东航 C919 机型开启第四条商业定期航线——上海虹桥往返广州白云。\
-\
-工业和信息化部、国家自然科学基金委员会 6 月 14 日签署合作协议，共同设立大飞机基础研究联合基金。\
-\
-全球积压飞机订单超 1.4 万架，当前全球航空业因零部件供应短缺、交付周期变长等问题面临供应链威胁，或为国内航空航发产业链相关企业带来航空出海业务新增量。\",\
-\"schema\":[\"地理位置\",\"组织机构\",\"气候类型\",\"时间\"]}'
+instruction ='请把我给你的原始词，转换成标准医疗操作代码和标准词。比如我说“横结肠造口还纳术”，你要回答“代码：46.5204 标准词：横结肠造口闭合术”。寻找和标准医疗操作代码最接近的标准词，不能凭空编造。如果有多个标准词，用##分隔。如输入”右眼白内障超声乳化抽吸术+人工晶体置入术“，则输出”代码：13.7000 标准词：置入人工晶状体##代码：13.4100 标准词：白内障晶状体乳化和抽吸“'
+input_text = '左甲状腺部分切除+右甲状腺腺叶切除术'
 ctx = f'{cat_char}:{instruction}\n{input_text}\n{bot_char}:'
 print(ctx)
 from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
