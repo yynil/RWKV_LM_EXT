@@ -157,7 +157,8 @@ def create_arg_parser():
     parser.add_argument('--emb_id', type=int, default=151329, help='cls id')
     parser.add_argument('--mask_id', type=int, default=151330, help='mask id')
     parser.add_argument('--pad_id', type=int, default=151334, help='pad id')
-
+    parser.add_argument("--ds_bucket_mb", default=200, type=int)  # deepspeed bucket size in MB. 200 seems enough
+    parser.add_argument('--ckpt_file', type=str, default=None, help='checkpoint file')
     return parser
 
 def configure_args(args):
@@ -203,6 +204,9 @@ if __name__ == '__main__':
 
     model = RwkvEncoder(args) 
    
+    if args.ckpt_file is not None:
+        print(f'loading model from {args.ckpt_file}')
+        model.load_state_dict(torch.load(args.ckpt_file))
 
     #Train the model
     # device = "auto"
@@ -222,7 +226,9 @@ if __name__ == '__main__':
                       gradient_clip_val=args.gradient_clip_val,
                       val_check_interval=args.val_check_interval,
                       use_distributed_sampler=False)
-
+    if "deepspeed" in args.strategy:
+        trainer.strategy.config["zero_optimization"]["allgather_bucket_size"] = args.ds_bucket_mb * 1000 * 1000
+        trainer.strategy.config["zero_optimization"]["reduce_bucket_size"] = args.ds_bucket_mb * 1000 * 1000
     
     print(model)
     print("Current device rank: ", trainer.global_rank)
