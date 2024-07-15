@@ -78,10 +78,12 @@ if __name__ == '__main__':
 
     kg_states_file = '/media/yueyulin/data_4t/models/states_tuning/instructKGC_scattered/trainable_model/epoch_2/RWKV-x060-World-7B-v2.1-20240507-ctx4096.pth.pth'
     type_states_file = '/media/yueyulin/data_4t/models/states_tuning/kg_type/20240702-105004/trainable_model/epoch_2/RWKV-x060-World-7B-v2.1-20240507-ctx4096.pth.pth'
+    unit_extractor_states_file = '/media/yueyulin/data_4t/models/states_tuning/units_extractor/trainable_model/epoch_2/RWKV-x060-World-7B-v2.1-20240507-ctx4096.pth.pth'
     tokenizer_file = '/home/yueyulin/github/RWKV_LM_EXT/tokenizer/rwkv_vocab_v20230424.txt'
     sg = StatesGenerator(model_file,tokenizer_file)
     sg.load_states(kg_states_file,'kg')
     sg.load_states(type_states_file,'type')
+    sg.load_states(unit_extractor_states_file,'unit_extractor')
     from kg_schema import whole_schema,all_types
     import json
     kg_instruction = '你是一个图谱实体知识结构化专家。请从input中抽取出符合schema定义的实体实例和其属性，不存在的属性不输出，属性存在多值就返回列表。请按照JSON字符串的格式回答。'
@@ -91,12 +93,26 @@ if __name__ == '__main__':
     print(input_text)
     type_output = sg.generate(input_text,type_instruction,'type',top_k=0,top_p=0,gen_count=10)
     print(type_output)
-    type_output = json.loads(type_output)
-    schema_type = type_output['result']
+    # type_output = json.loads(type_output)
+    schema_type = '人物'
     print(schema_type)
     schema = whole_schema[schema_type]
     input_text = json.dumps({'input':text,'schema':schema},ensure_ascii=False)
     kg_output = sg.generate(input_text,kg_instruction,'kg',top_k=0,top_p=0,gen_count=2048)
     print(kg_output)
     kg_output = json.loads(kg_output)
-    print(kg_output['result'])
+    # print(kg_output['result'])
+
+    unit_instruction = '你是一个单位提取专家。请从input中抽取出数字和单位，请按照JSON字符串的格式回答，无法提取则不输出。'
+    input_text = '大约503万平方米'
+    unit_output = sg.generate(input_text,unit_instruction,'unit_extractor',top_k=0,top_p=0,gen_count=128)
+    print(unit_output)
+    input_text = '4845人'
+    unit_output = sg.generate(input_text,unit_instruction,'unit_extractor',top_k=0,top_p=0,gen_count=128)
+    print(unit_output)
+    input_text = '约89434户'
+    unit_output = sg.generate(input_text,unit_instruction,'unit_extractor',top_k=0,top_p=0,gen_count=128)
+    print(unit_output)
+    input_text = '可能有38.87亿平方公里'
+    unit_output = sg.generate(input_text,unit_instruction,'unit_extractor',top_k=0,top_p=0,gen_count=128)
+    print(unit_output)

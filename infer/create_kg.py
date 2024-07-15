@@ -15,10 +15,18 @@ if __name__ == '__main__':
     sg = StatesGenerator(model_file,tokenizer_file)
     sg.load_states(kg_states_file,'kg')
     # sg.load_states(type_states_file,'type')
-
-    test_txt_file = os.path.join(os.path.dirname(os.path.realpath(__file__)),'geo.txt')
-    with open(test_txt_file,'r') as f:
-        lines = f.readlines()
+    input_dir = '/home/yueyulin/work/my_projects/lawyer_assistant'
+    import glob
+    txt_files = glob.glob(os.path.join(input_dir,'scraped_texts_*.txt'))
+    print(txt_files)
+    # test_txt_file = os.path.join(os.path.dirname(os.path.realpath(__file__)),'geo.txt')
+    # with open(test_txt_file,'r') as f:
+    #     lines = f.readlines()
+    lines = []
+    for txt_file in txt_files:
+        with open(txt_file,'r') as f:
+            lines.extend(f.readlines())
+    print(f'read {len(lines)} lines')
     import json
     from kg_schema import whole_schema,all_types
     kg_instruction = '你是一个图谱实体知识结构化专家。请从input中抽取出符合schema定义的实体实例和其属性，不存在的属性不输出，属性存在多值就返回列表。请按照JSON字符串的格式回答。'
@@ -62,16 +70,36 @@ if __name__ == '__main__':
     for txt in lines:
         kg_output = sg.generate(json.dumps({'input':txt,'schema':all_types},ensure_ascii=False),kg_instruction,'kg',top_k=0,top_p=0,gen_count=2048)
         print(kg_output)
-        relations.extend(json.loads(kg_output)['result'])
+        try:
+            kg_output = json.loads(kg_output)['result']
+            relations.extend(kg_output)
+        except:
+            continue
     print(relations)
-
+    with open(os.path.join(os.path.dirname(os.path.realpath(__file__)),'output_relations.jsonl'),'w') as f:
+        for r in relations:
+            f.write(json.dumps(r,ensure_ascii=False)+'\n')
+    #filter relation not in schema
+    new_relation = []
+    for r in relations:
+        if r['relation'] in schema[1]:
+            if 'head_type' not in r:
+                r['head_type'] = schema[0]
+            if 'tail_type' not in r:
+                if 'type' in r:
+                    r['tail_type'] = r['type']
+                else:
+                    r['tail_type'] = schema[0]
+            new_relation.append(r)
+    relations = new_relation
     def extract_entity_and_type(relation):
         typed_entities = {}
         for r in relation:
+            print(r)
             head = r['head']
             tail = r['tail']
             head_type = r['head_type']
-            tail_type = r['tail_type']
+            tail_type = r['tail_type'] if 'tail_type' in r else r['type'] if 'type' in r else None
             if head_type not in typed_entities:
                 typed_entities[head_type] = []
             if head not in typed_entities[head_type]:
@@ -83,54 +111,5 @@ if __name__ == '__main__':
         return typed_entities
 
 
-
-    all_typed_entities = extract_entity_and_type(relations)
-
-    print(all_typed_entities)
     
-    import networkx as nx
-
-    def create_graph_from_relations(relations):
-        # 创建一个有向图
-        G = nx.DiGraph()
-        
-        # 遍历关系数组，添加节点和边
-        for relation in relations:
-            head = relation['head']
-            tail = relation['tail']
-            head_type = relation['head_type']
-            tail_type = relation['tail_type']
-            head_identifier = f'{head_type}_{head}'
-            tail_identifier = f'{tail_type}_{tail}'
-            relation_label = relation['relation']
-            
-            # 如果节点不存在，则添加节点
-            if head_identifier not in G:
-                G.add_node(head_identifier)
-            if tail_identifier not in G:
-                G.add_node(tail_identifier)
-            
-            # 添加有向边，边的属性为关系标签
-            G.add_edge(head_identifier, tail_identifier, label=relation_label)
-        
-        return G
-    graph = create_graph_from_relations(relations)
-    # import matplotlib.pyplot as plt
-    # from matplotlib import rcParams
-    # rcParams['font.family'] = 'WenQuanYi Zen Hei'
-    # rcParams['axes.unicode_minus'] = False
-    # plt.figure(figsize=(20, 16))
-    # pos = nx.spring_layout(graph)
-    # nx.draw_networkx_nodes(graph, pos)
-    # nx.draw_networkx_edges(graph, pos,arrowstyle='->',arrowsize=5)
-    # nx.draw_networkx_labels(graph, pos,font_family='WenQuanYi Zen Hei')
-    # nx.draw_networkx_edge_labels(graph, pos,edge_labels=nx.get_edge_attributes(graph,'relation'),font_family='WenQuanYi Zen Hei')
-    # plt.savefig('geo.png')
-    # plt.close()
-
-    from networkx.drawing.nx_agraph import graphviz_layout,write_dot
-    import pygraphviz as pgv
-    A = nx.nx_agraph.to_agraph(graph)
-    A.layout(prog='dot')
-    A.draw('geo.svg',format='svg')
-    del A
+    
