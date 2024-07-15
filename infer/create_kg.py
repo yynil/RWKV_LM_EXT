@@ -79,36 +79,7 @@ if __name__ == '__main__':
     with open(os.path.join(os.path.dirname(os.path.realpath(__file__)),'output_relations.jsonl'),'w') as f:
         for r in relations:
             f.write(json.dumps(r,ensure_ascii=False)+'\n')
-    #filter relation not in schema
-    new_relation = []
-    for r in relations:
-        if r['relation'] in schema[1]:
-            if 'head_type' not in r:
-                r['head_type'] = schema[0]
-            if 'tail_type' not in r:
-                if 'type' in r:
-                    r['tail_type'] = r['type']
-                else:
-                    r['tail_type'] = schema[0]
-            new_relation.append(r)
-    relations = new_relation
-    def extract_entity_and_type(relation):
-        typed_entities = {}
-        for r in relation:
-            print(r)
-            head = r['head']
-            tail = r['tail']
-            head_type = r['head_type']
-            tail_type = r['tail_type'] if 'tail_type' in r else r['type'] if 'type' in r else None
-            if head_type not in typed_entities:
-                typed_entities[head_type] = []
-            if head not in typed_entities[head_type]:
-                typed_entities[head_type].append(head)
-            if tail_type not in typed_entities:
-                typed_entities[tail_type] = []
-            if tail not in typed_entities[tail_type]:
-                typed_entities[tail_type].append(tail)
-        return typed_entities
+
 
 
     
