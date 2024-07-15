@@ -89,7 +89,7 @@ if __name__ == '__main__':
                             number = result['number']
                             unit = result['unit']
                             r['tail'] = number
-                            relations.append({'head':r['tail'],'tail':unit,'relation':'单位','head_type':'度量','tail_type':'单位'})
+                            r['relation'] = r['relation'] + '_单位_' + unit
                         except:
                             print(f'error in parsing unit {r}')
                             continue
