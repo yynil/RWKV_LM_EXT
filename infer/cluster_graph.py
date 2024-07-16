@@ -26,7 +26,7 @@ if __name__ == '__main__':
             if not G.has_edge(head_identifier, tail_identifier):
                 G.add_edge(head_identifier, tail_identifier, label=relation_label)
     from graspologic.partition import hierarchical_leiden
-    community_cluster_size = 20
+    community_cluster_size = 15
     community_mapping = hierarchical_leiden(G,max_cluster_size=community_cluster_size,random_seed=86)
     # print(community_mapping)
     sub_graph_nodes = {}

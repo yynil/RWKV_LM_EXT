@@ -24,10 +24,16 @@ if __name__ == '__main__':
     allow_relations = schema[1]
     print(f'allow_relations: {allow_relations}')
     allow_head_tail_types = {}
+    allowed_tail_types = []
+    allowed_head_types = []
     for h_t_type in schema[0]:
         h,r,t = h_t_type.split('_')
         heads = h.split('/')
         tails = t.split('/')
+        for h in heads:
+            allowed_head_types.append(h)
+        for t in tails:
+            allowed_tail_types.append(t)
         for head in heads:
             for tail in tails:
                 if head not in allow_head_tail_types:
@@ -41,7 +47,49 @@ if __name__ == '__main__':
     with open(input_file,'r') as f:
         for line in f:
             r = json.loads(line)
+            if 'head_type' not in r or 'tail_type' not in r:
+                print(f'{r} is broken because no type')
+                continue
+            head_types = r['head_type'].split('/')
+            tail_types = r['tail_type'].split('/')
+            if len(head_types) > 1:
+                #select one that is in allow_head_tail_types
+                for head_type in head_types:
+                    if head_type in allowed_head_types:
+                        r['head_type'] = head_type
+                        break
+            if len(tail_types) > 1:
+                for tail_type in tail_types:
+                    if tail_type in allowed_tail_types:
+                        r['tail_type'] = tail_type
+                        break
+            if r['head_type'] == '地理地区' and r['tail_type'] == '地理地区' and \
+                (r['relation'] == '地理地区' or r['relation'] == '所属行政区域'): 
+                r['relation'] = '位于'
             if 'relation' in r and 'head' in r and 'tail' in r and r['relation'] in schema[1]:
+                relations.append(r)              
+            else:
+                print(f'{r} is broken')
+    #sort by head , relation
+    relation_id = {}
+    for rel in schema[1]:
+        relation_id[rel] = len(relation_id)
+    relations = sorted(relations,key=lambda x:x['head']+str(relation_id[x['relation']]))
+    new_relations = []
+    #group relations by head
+    import itertools
+    for head,group in itertools.groupby(relations,key=lambda x:x['head']):
+        grouped_relations = list(group)
+        new_relations.append(grouped_relations)
+    from tqdm import tqdm
+    progress_bar = tqdm(total=len(new_relations))
+    final_results = []
+    for relations in new_relations:
+        official_head = None
+        # print(relations)
+        if not isinstance(relations,list):
+            relations = [relations]
+        for r in relations:
                 if 'head_type' not in r:
                     r['head_type'] = schema[0]
                 if 'tail_type' not in r:
@@ -53,6 +101,9 @@ if __name__ == '__main__':
                     r['relation'] in allow_head_tail_types[r['head_type']] \
                         and r['tail_type'] in allow_head_tail_types[r['head_type']][r['relation']]:
                     
+                    if official_head is not None:
+                        r['head'] = official_head
+                    
                     if r['tail_type'] == '地理地区':
                         df = addressparser.transform([r['tail']])
                         tail_province = df['省'][0]
@@ -62,26 +113,22 @@ if __name__ == '__main__':
                         final_name = tail_province+tail_city+tail_district+tail_region
                         r['tail'] = final_name
 
-                    if r['head_type'] == '地理地区':
+                    if r['head_type'] == '地理地区' and r['relation'] == '位于':
                         df = addressparser.transform([r['head']])
                         province = df['省'][0]
                         city = df['市'][0]
                         district = df['区'][0]
                         region = df['地名'][0]
+                        if district == '':
+                            district = tail_district
+                        if city == '':
+                            city = tail_city
+                        if province == '':
+                            province = tail_province
                         final_name = province+city+district+region
                         r['head'] = final_name
-                        # regions = list(jieba.cut(r['head']))
-                        # if len(regions) > 1:
-                        #     r['head'] = regions[-1]
-                        #     for i in range(len(regions)-1):
-                        #         relations.append({'head':regions[i+1],'tail':regions[i],'relation':'位于','head_type':'地理地区','tail_type':'地理地区'})
-                    
-                        # regions = list(jieba.cut(r['tail']))
-                        # if len(regions) > 1:
-                        #     r['tail'] = regions[-1]
-                        #     for i in range(len(regions)-1):
-                        #         relations.append({'head':regions[i+1],'tail':regions[i],'relation':'位于','head_type':'地理地区','tail_type':'地理地区'})
-                    relations.append(r)
+                        official_head = final_name
+
                     if r['tail_type'] == '度量':
                         try:
                             unit_output = sg.generate(r['tail'],unit_instruction,'unit_extractor',top_k=0,top_p=0,gen_count=128)
@@ -90,16 +137,19 @@ if __name__ == '__main__':
                             unit = result['unit']
                             r['tail'] = number
                             r['relation'] = r['relation'] + '_单位_' + unit
-                        except:
-                            print(f'error in parsing unit {r}')
-                            continue
-                    
-            else:
-                print(f'{r} is broken')
-    print(f'final relations count: {len(relations)}')
+                        except Exception as e:
+                            import traceback
+                            traceback.print_exc()
+                            print(f'error in parsing unit {r} result is {unit_output}')      
+                    final_results.append(r)
+                    # print(f'add {r}')
+        progress_bar.update(1)
+    progress_bar.close()
+
+    print(f'final relations count: {len(final_results)}')
 
     with open(os.path.join(os.path.dirname(os.path.realpath(__file__)),'output_relations_filtered.jsonl'),'w') as f:
-        for r in relations:
+        for r in final_results:
             f.write(json.dumps(r,ensure_ascii=False)+'\n')
     def create_graph_from_relations(relations):
         # 创建一个有向图
@@ -127,7 +177,7 @@ if __name__ == '__main__':
                 G.add_edge(head_identifier, tail_identifier, label=relation_label)
         
         return G
-    graph = create_graph_from_relations(relations)
+    graph = create_graph_from_relations(final_results)
     # import matplotlib.pyplot as plt
     # from matplotlib import rcParams
     # rcParams['font.family'] = 'WenQuanYi Zen Hei'
