@@ -107,13 +107,15 @@ if __name__ == '__main__':
                     if r['tail_type'] == '地理地区':
                         df = addressparser.transform([r['tail']])
                         tail_province = df['省'][0]
+                        if tail_province in ['北京市','上海市','天津市','重庆市']:
+                            tail_province = ''
                         tail_city = df['市'][0]
                         tail_district = df['区'][0]
                         tail_region = df['地名'][0]
                         final_name = tail_province+tail_city+tail_district+tail_region
                         r['tail'] = final_name
 
-                    if r['head_type'] == '地理地区' and r['relation'] == '位于':
+                    if official_head is None and r['head_type'] == '地理地区' and r['relation'] == '位于':
                         df = addressparser.transform([r['head']])
                         province = df['省'][0]
                         city = df['市'][0]
@@ -125,6 +127,8 @@ if __name__ == '__main__':
                             city = tail_city
                         if province == '':
                             province = tail_province
+                        if province in ['北京市','上海市','天津市','重庆市']:
+                            province = ''
                         final_name = province+city+district+region
                         r['head'] = final_name
                         official_head = final_name
