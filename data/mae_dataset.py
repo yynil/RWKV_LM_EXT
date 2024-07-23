@@ -26,7 +26,8 @@ def dup_mae_collator(examples,
                      encoder_mlm_probability,
                      mask_id = 3,
                      emb_id = 1,
-                     vocab_size = 65536):
+                     vocab_size = 65536,
+                     pad_id = 0):
     batch = {
         'encoder_input_ids': [],
         'encoder_labels': [],
@@ -61,9 +62,9 @@ def dup_mae_collator(examples,
         batch['bag_word_weight'].append(weight.unsqueeze(0))
         encoder_labels[-1] = -100
         decoder_labels[-1] = -100
-        batch['encoder_input_ids'].append(encoder_input_ids if padding_size == 0 else encoder_input_ids + [0]*padding_size)
+        batch['encoder_input_ids'].append(encoder_input_ids if padding_size == 0 else encoder_input_ids + [pad_id]*padding_size)
         batch['encoder_labels'].append(encoder_labels if padding_size == 0 else encoder_labels + [-100]*padding_size)
-        batch['decoder_input_ids'].append(decoder_input_ids if padding_size == 0 else decoder_input_ids + [0]*padding_size)
+        batch['decoder_input_ids'].append(decoder_input_ids if padding_size == 0 else decoder_input_ids + [pad_id]*padding_size)
         batch['decoder_labels'].append(decoder_labels if padding_size == 0 else decoder_labels + [-100]*padding_size)
     batch['encoder_input_ids'] = torch.tensor(batch['encoder_input_ids'],dtype=torch.long)
     batch['encoder_labels'] = torch.tensor(batch['encoder_labels'],dtype=torch.long)
@@ -77,7 +78,8 @@ def mae_collator(examples,
                  max_seq_length, 
                  encoder_mlm_probability, 
                  mask_id = 3,
-                 emb_id = 1,):
+                 emb_id = 1,
+                 pad_id = 0):
     batch = {
         'encoder_input_ids': [],
         'encoder_labels': [],
@@ -104,9 +106,9 @@ def mae_collator(examples,
                 encoder_labels[i] = -100
         encoder_labels[-1] = -100
         decoder_labels[-1] = -100
-        batch['encoder_input_ids'].append(encoder_input_ids if padding_size == 0 else encoder_input_ids + [0]*padding_size)
+        batch['encoder_input_ids'].append(encoder_input_ids if padding_size == 0 else encoder_input_ids + [pad_id]*padding_size)
         batch['encoder_labels'].append(encoder_labels if padding_size == 0 else encoder_labels + [-100]*padding_size)
-        batch['decoder_input_ids'].append(decoder_input_ids if padding_size == 0 else decoder_input_ids + [0]*padding_size)
+        batch['decoder_input_ids'].append(decoder_input_ids if padding_size == 0 else decoder_input_ids + [pad_id]*padding_size)
         batch['decoder_labels'].append(decoder_labels if padding_size == 0 else decoder_labels + [-100]*padding_size)
     batch['encoder_input_ids'] = torch.tensor(batch['encoder_input_ids'],dtype=torch.long)
     batch['encoder_labels'] = torch.tensor(batch['encoder_labels'],dtype=torch.long)
@@ -184,9 +186,9 @@ def mlm_collator(examples,
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_dir', type=str, help='input_file',default='/media/yueyulin/data_4t/data/mae_dataset')
-    parser.add_argument('--max_length',type=int,default=512)
-    parser.add_argument('--vocab_size',type=int,default=65536)
+    parser.add_argument('--data_dir', type=str, help='input_file',default='/media/yueyulin/data_4t/data/ccia_ds_mini_128/')
+    parser.add_argument('--max_length',type=int,default=128)
+    parser.add_argument('--vocab_size',type=int,default=151343)
     args = parser.parse_args()
     import datasets
     from datasets import load_from_disk
@@ -195,7 +197,7 @@ if __name__ == '__main__':
     print(dataset[0])
     from torch.utils.data import DataLoader
     from functools import partial
-    collator = partial(mae_collator, max_seq_length=args.max_length, encoder_mlm_probability=0.3)
+    collator = partial(mae_collator, max_seq_length=args.max_length, encoder_mlm_probability=0.3,pad_id=151334,mask_id=151330,emb_id=151329)
     dataloader = DataLoader(dataset, batch_size=2, collate_fn=collator)
     for batch in dataloader:
         encoder_input_ids,encoder_labels,decoder_input_ids,decoder_labels = batch['encoder_input_ids'],batch['encoder_labels'],batch['decoder_input_ids'],batch['decoder_labels']

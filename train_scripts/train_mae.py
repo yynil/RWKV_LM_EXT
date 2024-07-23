@@ -154,8 +154,12 @@ def create_arg_parser():
     parser.add_argument('--train_type', type=str, default='', help='train type')
     parser.add_argument('--skip_steps',type=int,default=0,help='skip steps in the peft checkpoint')
 
-    parser.add_argument('--mlm_probability', type=float, default=0.15, help='mlm probability')
-
+    parser.add_argument('--mlm_probability', type=float, default=0.3, help='mlm probability')
+    parser.add_argument('--emb_id', type=int, default=151329, help='cls id')
+    parser.add_argument('--mask_id', type=int, default=151330, help='mask id')
+    parser.add_argument('--pad_id', type=int, default=151334, help='pad id')
+    parser.add_argument("--ds_bucket_mb", default=200, type=int)  # deepspeed bucket size in MB. 200 seems enough
+    parser.add_argument('--ckpt_file', type=str, default=None, help='checkpoint file')
     return parser
 
 def configure_args(args):
@@ -182,15 +186,16 @@ if __name__ == '__main__':
     from datasets import load_from_disk
     dataset = load_from_disk(args.train_data)
     collate_fn = \
-        partial(mae_collator, max_seq_length=args.max_seq_length, encoder_mlm_probability=args.mlm_probability) \
+        partial(mae_collator, max_seq_length=args.max_seq_length, encoder_mlm_probability=args.mlm_probability,mask_id=args.mask_id,emb_id=args.emb_id,pad_id=args.pad_id) \
             if not args.dup_mae \
             else \
-        partial(dup_mae_collator, max_seq_length=args.max_seq_length, encoder_mlm_probability=args.mlm_probability,vocab_size=args.vocab_size)
+        partial(dup_mae_collator, max_seq_length=args.max_seq_length, encoder_mlm_probability=args.mlm_probability,vocab_size=args.vocab_size,mask_id=args.mask_id,emb_id=args.emb_id,pad_id=args.pad_id)
     train_dataloader = DataLoader(dataset,
                                   num_workers=8,
                                   pin_memory=True, 
                                   batch_size=args.micro_bsz, 
-                                  collate_fn=collate_fn
+                                  collate_fn=collate_fn,
+                                  shuffle=True
                                   )
 
     args.epoch_steps = len(train_dataloader)//args.num_devices
@@ -198,7 +203,10 @@ if __name__ == '__main__':
     dev_dataloader = None
 
     model = RwkvMAEForSequenceEmbedding(args) 
-   
+    if args.ckpt_file is not None:
+        print(f'loading model from {args.ckpt_file}')
+        info = model.load_state_dict(torch.load(args.ckpt_file),strict=False)
+        print('load model info:',info)
 
     #Train the model
     # device = "auto"
@@ -216,9 +224,11 @@ if __name__ == '__main__':
                       enable_checkpointing=args.enable_checkpointing,
                       accumulate_grad_batches=args.accumulate_grad_batches,
                       gradient_clip_val=args.gradient_clip_val,
-                      val_check_interval=args.val_check_interval,
-                      use_distributed_sampler=False)
+                      val_check_interval=args.val_check_interval)
 
+    if "deepspeed" in args.strategy:
+        trainer.strategy.config["zero_optimization"]["allgather_bucket_size"] = args.ds_bucket_mb * 1000 * 1000
+        trainer.strategy.config["zero_optimization"]["reduce_bucket_size"] = args.ds_bucket_mb * 1000 * 1000
     
     print(model)
     print("Current device rank: ", trainer.global_rank)

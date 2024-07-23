@@ -645,6 +645,10 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
             args.bow_loss_weight = 0.1
         if not hasattr(args, 'mask_id'):
             args.mask_id = 3
+        if not hasattr(args, 'pad_id'):
+            args.pad_id = 0
+        if not hasattr(args, 'share_emb'):
+            args.share_emb = True
         assert args.n_embd % 32 == 0
         assert args.dim_att % 32 == 0
         assert args.dim_ffn % 32 == 0
@@ -656,7 +660,7 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
             RWKV_Tmix_x060.forward = bi_att_forward
         self.blocks = nn.ModuleList([Block(args, i) for i in range(args.n_layer)])
         self.ln_out = nn.LayerNorm(args.n_embd)
-        self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
+        # self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
         self.emb_id = args.emb_id
 
         if args.head_qk > 0:
@@ -665,7 +669,8 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
             self.register_buffer("copy_mask", torch.tril(torch.ones(args.ctx_len, args.ctx_len)))
         self.drop0 = nn.Dropout(p = args.dropout)
         self.onelayer_decoder = OneLayerDecoder(args,self.emb)
-
+        if not args.share_emb:
+            self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
     def configure_optimizers(self):
         args = self.args
         
@@ -760,7 +765,7 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
         B, T = idx.size()
         assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
         if args.bi_rwkv:
-            mask = create_mask(idx,emb_id=args.emb_id)
+            mask = create_mask(idx,emb_id=args.emb_id,pad_id=args.pad_id)
             rev_idx = reverse_x_idx(mask,T)
         x = self.emb(idx)
         x_emb = x
@@ -800,9 +805,15 @@ class RwkvMAEForSequenceEmbedding(pl.LightningModule):
             elif os.environ["RWKV_FLOAT_MODE"] == "bf16":
                 c = c @ F.one_hot(idx, num_classes=args.vocab_size).bfloat16()
 
-            x = self.head(x) + c
+            if not args.share_emb:
+                x = self.head(x)+c
+            else:
+                x = torch.matmul(x,self.emb.weight.t())+c
         else:
-            x = self.head(x)
+            if not args.share_emb:
+                x = self.head(x)
+            else:   
+                x = torch.matmul(x,self.emb.weight.t())
         #x is used to caclculate the MLM loss
         return seq_emb, x,mask
 

@@ -224,8 +224,7 @@ if __name__ == '__main__':
                       enable_checkpointing=args.enable_checkpointing,
                       accumulate_grad_batches=args.accumulate_grad_batches,
                       gradient_clip_val=args.gradient_clip_val,
-                      val_check_interval=args.val_check_interval,
-                      use_distributed_sampler=False)
+                      val_check_interval=args.val_check_interval)
     if "deepspeed" in args.strategy:
         trainer.strategy.config["zero_optimization"]["allgather_bucket_size"] = args.ds_bucket_mb * 1000 * 1000
         trainer.strategy.config["zero_optimization"]["reduce_bucket_size"] = args.ds_bucket_mb * 1000 * 1000
