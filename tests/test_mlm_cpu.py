@@ -17,6 +17,7 @@ def setup_env():
     os.environ['WKV'] = ''
     os.environ['RWKV_TRAIN_TYPE'] = ''
     os.environ['HF_ENDPOINT'] = "https://hf-mirror.com"
+    os.environ['NO_CUDA'] = '1'
 setup_env()
 from src.model_run import RwkvEncoder,PIPELINE_ARGS,create_empty_args,load_embedding_ckpt_and_parse_args,generate_beamsearch,generate
 def load_base_model(base_model):
@@ -41,7 +42,8 @@ if __name__ == '__main__':
     args.pad_id = 151334
     args.mask_id = 151330
     print(model)
-    model = model.to(device='cuda',dtype=torch.bfloat16)
+    device = 'cpu'
+    model = model.to(device=device,dtype=torch.float32)
     texts = ['法国的首都在[MASK]。',
              '[MASK]首都在北京。',
              '生活的真谛是[MASK]。',
@@ -63,12 +65,12 @@ if __name__ == '__main__':
     for text_idx in texts_idx:
         mask_positions.append([i for i, x in enumerate(text_idx) if x == args.mask_id])
     print(mask_positions)
-    input_ids = torch.tensor(texts_idx,dtype=torch.long,device='cuda')
+    input_ids = torch.tensor(texts_idx,dtype=torch.long,device=device)
     MAX_CUM_PROB = 0.7
     import time
     with torch.no_grad():
-        with torch.autocast(device_type='cuda',dtype=torch.bfloat16):
-            print('start to forward[GPU]')
+        with torch.autocast(device_type=device,dtype=torch.float32):
+            print('start to forward[CPU]')
             start_time = time.time()
             logits = model.forward(input_ids)
             end_time = time.time()
