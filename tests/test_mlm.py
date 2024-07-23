@@ -18,7 +18,8 @@ def setup_env():
     os.environ['RWKV_TRAIN_TYPE'] = ''
     os.environ['HF_ENDPOINT'] = "https://hf-mirror.com"
 setup_env()
-from src.model_run import RwkvEncoder,PIPELINE_ARGS,create_empty_args,load_embedding_ckpt_and_parse_args,generate_beamsearch,generate
+from src.model_encoder_run import RwkvEncoder
+from src.model_run import PIPELINE_ARGS,create_empty_args,load_embedding_ckpt_and_parse_args
 def load_base_model(base_model):
     args = create_empty_args()
     w = load_embedding_ckpt_and_parse_args(base_model, args)

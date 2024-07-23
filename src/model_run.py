@@ -4,6 +4,7 @@
 
 import os
 from typing import Dict, List, Optional, Union
+
 parent_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 import sys
 sys.path.append(parent_path)
@@ -413,7 +414,6 @@ class MishGLU(MyModule):
 # The RWKV Model with our blocks
 ########################################################################################################
 
-
 class Block(nn.Module):
     def __init__(self, args, layer_id):
         super().__init__()
@@ -521,70 +521,6 @@ def reverse_x_idx(mask,max_len):
     return rev_idx.to(torch.long)
 def reverse_x(x,rev_idx):
     return torch.gather(x,1,rev_idx.to(x.device).unsqueeze(-1).expand(-1,-1,x.size(-1)))  
-if 'NO_CUDA'in os.environ and os.environ['NO_CUDA'] == '1':
-    def run_rwkv6_forward(r,k,v,w,u):
-        B, T, C = r.shape
-        H = C // HEAD_SIZE
-        
-        # 重塑张量
-        r = r.view(B, T, H, HEAD_SIZE)
-        k = k.view(B, T, H, HEAD_SIZE)
-        v = v.view(B, T, H, HEAD_SIZE)
-        w = w.view(B, T, H, HEAD_SIZE)
-
-        # 处理w，匹配CUDA实现
-        ew = torch.exp(-torch.exp(w))
-
-        y = torch.zeros((B, T, H, HEAD_SIZE), device=r.device, dtype=torch.float32)
-        
-        # 初始化状态张量，包含所有batch和head
-        state = torch.zeros(B, H, HEAD_SIZE, HEAD_SIZE, dtype=torch.float32, device=r.device)
-
-        for t in range(T):
-            rt = r[:, t]  # Shape: [B, H, HEAD_SIZE]
-            kt = k[:, t]  # Shape: [B, H, HEAD_SIZE]
-            vt = v[:, t]  # Shape: [B, H, HEAD_SIZE]
-            wt = ew[:, t]  # Shape: [B, H, HEAD_SIZE]
-            
-            for j in range(HEAD_SIZE):
-                v_h = vt[:, :, j].unsqueeze(2)  # Shape: [B, H, 1]
-                x = kt * v_h  # Shape: [B, H, HEAD_SIZE]
-                y_local = torch.sum(rt * (x * u + state[:, :, j]), dim=2)  # Shape: [B, H]
-                state[:, :, j] = state[:, :, j] * wt + x
-                y[:, t, :, j] = y_local
-
-        return y.view(B, T, C)
-        
-    def bi_att_forward_batch(self,x,rev_idx,mask):
-        B,T,C = x.size()
-        H = self.n_head
-        r,k,v,g,w = self.jit_func(x)
-        rev_x = reverse_x(x,rev_idx)
-        rev_r,rev_k,rev_v,rev_g,rev_w = self.jit_func(rev_x)
-        u = self.time_faaaa
-        x = run_rwkv6_forward(r, k, v, w, u)
-        rev_x = run_rwkv6_forward(rev_r, rev_k, rev_v, rev_w, u)
-        rev_x = reverse_x(rev_x,rev_idx)
-        x = self.jit_func_2((x+rev_x)/2, g)
-        return x
-else:
-    def bi_att_forward_batch(self,x,rev_idx,mask):
-        B,T,C = x.size()
-        H = self.n_head
-        r,k,v,g,w = self.jit_func(x)
-        rev_x = reverse_x(x,rev_idx)
-        rev_r,rev_k,rev_v,rev_g,rev_w = self.jit_func(rev_x)
-        # rev_r = reverse_x(r,rev_idx)
-        # rev_k = reverse_x(k,rev_idx)
-        # rev_v = reverse_x(v,rev_idx)
-        # rev_w = reverse_x(w,rev_idx)
-        # rev_g = reverse_x(g,rev_idx)
-        from src.model import RUN_CUDA_RWKV6
-        x = RUN_CUDA_RWKV6(B, T, C, H, r, k, v, w, u=self.time_faaaa)
-        rev_x = RUN_CUDA_RWKV6(B, T, C, H, rev_r, rev_k, rev_v, rev_w, u=self.time_faaaa)
-        rev_x = reverse_x(rev_x,rev_idx)
-        x = self.jit_func_2((x+rev_x)/2, g)
-        return x
 
 def bi_block_forward_batch(self,x,rev_idx,mask):
     args = self.args
@@ -603,88 +539,6 @@ def bi_block_forward_batch(self,x,rev_idx,mask):
             x = x + self.att(self.ln1(x),rev_idx,mask)
         x = x + self.ffn(self.ln2(x))
     return x
-class RwkvEncoder(pl.LightningModule):
-    def __init__(self, args) -> None:
-        super().__init__()
-        self.args = args
-        if not hasattr(args, 'dim_att') or args.dim_att == 0:
-            args.dim_att = args.n_embd
-        if not hasattr(args, 'dim_ffn') or args.dim_ffn == 0:
-            args.dim_ffn = args.n_embd * 4
-        if not hasattr(args, 'tiny_att_layer') or args.tiny_att_layer == 0:
-            args.tiny_att_layer = -1
-        if not hasattr(args, 'tiny_att_dim') or args.tiny_att_dim == 0:
-            args.tiny_att_dim = -1
-        if not hasattr(args, 'emb_id'):
-            args.emb_id = 1
-        if not hasattr(args, 'bow_loss_weight'):
-            args.bow_loss_weight = 0.1
-        if not hasattr(args, 'mask_id'):
-            args.mask_id = 3
-        if not hasattr(args, 'share_emb'):
-            args.share_emb = True
-        if not hasattr(args, 'pad_id'):
-            args.pad_id = 0
-        assert args.n_embd % 32 == 0
-        assert args.dim_att % 32 == 0
-        assert args.dim_ffn % 32 == 0
-
-        self.emb = nn.Embedding(args.vocab_size, args.n_embd)
-        from src.model import RWKV_Tmix_x060,Block
-        Block.forward = bi_block_forward_batch
-        RWKV_Tmix_x060.forward = bi_att_forward_batch
-        self.blocks = nn.ModuleList([Block(args, i) for i in range(args.n_layer)])
-        self.ln_out = nn.LayerNorm(args.n_embd)
-        # self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
-        self.emb_id = args.emb_id
-
-        if args.head_qk > 0:
-            self.head_q = nn.Linear(args.n_embd, args.head_qk, bias=False)
-            self.head_k = nn.Linear(args.n_embd, args.head_qk, bias=False)
-            self.register_buffer("copy_mask", torch.tril(torch.ones(args.ctx_len, args.ctx_len)))
-        self.drop0 = nn.Dropout(p = args.dropout)
-        if not args.share_emb:
-            self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
-    def forward(self, idx):
-        args = self.args
-        B, T = idx.size()
-        assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
-        mask = create_mask(idx,emb_id=args.emb_id,pad_id=args.pad_id)
-        rev_idx = reverse_x_idx(mask,T)
-        x = self.emb(idx)
-        x_emb = x
-
-        x = self.drop0(x)
-        for block in self.blocks:
-            x = block(x,rev_idx,mask)
-
-        x = self.ln_out(x)
-
-        if args.head_qk > 0:
-            q = self.head_q(x)[:, :T, :]
-            k = self.head_k(x)[:, :T, :]
-            c = (q @ k.transpose(-2, -1)) * (1.0 / args.head_qk)
-            c = c.masked_fill(self.copy_mask[:T, :T] == 0, 0)
-
-            if "32" in os.environ["RWKV_FLOAT_MODE"]:
-                c = c @ F.one_hot(idx, num_classes=args.vocab_size)
-            elif os.environ["RWKV_FLOAT_MODE"] == "fp16":
-                c = c @ F.one_hot(idx, num_classes=args.vocab_size).half()
-            elif os.environ["RWKV_FLOAT_MODE"] == "bf16":
-                c = c @ F.one_hot(idx, num_classes=args.vocab_size).bfloat16()
-
-            if not args.share_emb:
-                x = self.head(x)+c
-            else:
-                x = torch.matmul(x,self.emb.weight.t())+c
-        else:
-            if not args.share_emb:
-                x = self.head(x)
-            else:   
-                x = torch.matmul(x,self.emb.weight.t())
-        #x is used to caclculate the MLM loss
-        return x
-    
 class RWKV(torch.nn.Module):
     def __init__(self, args):
         super().__init__()
