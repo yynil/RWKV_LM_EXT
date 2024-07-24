@@ -191,8 +191,10 @@ if __name__ == '__main__':
     #                               collate_fn=collate_fn,
     #                               shuffle=True
     #                               )
+    print(colorama.Fore.GREEN + f'loaded data from {args.train_data} length is len(train_dataloader)'+colorama.Style.RESET_ALL)
 
     args.epoch_steps = len(train_dataloader)//(args.num_devices*args.num_nodes)
+    print(f'epoch_steps is {args.epoch_steps}')
     
     dev_dataloader = None
 
