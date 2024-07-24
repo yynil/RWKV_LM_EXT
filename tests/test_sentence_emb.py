@@ -45,14 +45,10 @@ if __name__ == '__main__':
     print(model)
     device = 'cpu'
     model = model.to(device=device,dtype=torch.float32)
-    texts = ['法国的首都在[MASK]。',
-             '[MASK]首都在北京。',
-             '生活的真谛是[MASK]。',
-             '在二战中，阿道夫·希特勒是[MASK]。',
-             '1949年十月一号，发生了一件大事，那就是中华人民共和国[MASK]。',
-             '雨后，我[MASK]在公园里，呼吸新鲜的空气。',
-             '根据量子场论的解释，粒子的质量来自[MASK]的作用。',
-             '雨后，彩虹出现在天边，小美陶醉地说："真[MASK]啊!"',]
+    texts = ['今天天气真不错',
+             '晚上吃什么呢？',
+             '今天晚餐吃啥？',
+             '现在天气很好啊']
     tokenizer = AutoTokenizer.from_pretrained('THUDM/glm-4-9b-chat', trust_remote_code=True)
     print(tokenizer(texts,padding=True,add_special_tokens=False))
     texts_idx = [tokenizer.encode(text,add_special_tokens=False) for text in texts]
@@ -61,41 +57,20 @@ if __name__ == '__main__':
     texts_idx = [text_idx + [args.pad_id]*(max_len-len(text_idx)) for text_idx in texts_idx]
     print(texts_idx)
     
-    #find the mask positions in texts_idx
-    mask_positions = []
-    for text_idx in texts_idx:
-        mask_positions.append([i for i, x in enumerate(text_idx) if x == args.mask_id])
-    print(mask_positions)
+   
     input_ids = torch.tensor(texts_idx,dtype=torch.long,device=device)
     MAX_CUM_PROB = 0.7
     import time
+    from sentence_transformers.util import cos_sim as sim_fn
     with torch.no_grad():
         with torch.autocast(device_type=device,dtype=torch.float32):
             print('start to forward[CPU]')
             start_time = time.time()
-            logits = model.forward(input_ids)
+            embs = model.encode_sentence(input_ids)
             end_time = time.time()
             print(f'forward time is {end_time-start_time}')
-            for b in range(len(texts_idx)):
-                mask_position = mask_positions[b]
-                masked_prob = torch.softmax(logits[b,mask_position],dim=-1)
-                print(masked_prob)
-                print(masked_prob.shape)
-                probs,indices = torch.topk(masked_prob,10)
-                print(probs)
-                print(indices)
-                for position in mask_position:
-                    cum_prob = 0
-                    mask_idx = 0
-                    for i in range(10):
-                        texts_idx[b][position] = indices[mask_idx][i].item()
-                        prob = probs[mask_idx][i].item()
-                        cum_prob += prob
-                        print(tokenizer.decode(texts_idx[b]),' prob is ',prob,' cum_prob is ',cum_prob)
-                        if cum_prob > MAX_CUM_PROB:
-                            break
-                    mask_idx += 1
-                print('----------------------------------')
+            print(embs)
+            print(sim_fn(embs,embs))
                 # for i in range(10):
                 #     mask_idx = 0
                 #     cum_prob = 0

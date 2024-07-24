@@ -301,6 +301,11 @@ class RwkvEncoder(nn.Module):
         self.drop0 = nn.Dropout(p = args.dropout)
         if not args.share_emb:
             self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
+    def encode_sentence(self, idx):
+        embs = self.forward(idx)
+        #get the position of emb_id
+        position = torch.eq(idx, self.emb_id).int().argmax(-1)
+        return embs[torch.arange(embs.size(0)), position]
     def forward(self, idx):
         args = self.args
         B, T = idx.size()
