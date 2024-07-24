@@ -121,7 +121,7 @@ def fill_mask_internal(input_text):
                         texts_idx[b][position] = indices[mask_idx][i].item()
                         prob = probs[mask_idx][i].item()
                         cum_prob += prob
-                        results.append({'output_text':tokenizer.decode(texts_idx[b]),'score':prob})
+                        results.append({'output_text':tokenizer.decode(texts_idx[b],skip_special_tokens=True),'score':prob})
                         if cum_prob > MAX_CUM_PROB:
                             break
                     mask_idx += 1
