@@ -191,7 +191,7 @@ if __name__ == '__main__':
     #                               collate_fn=collate_fn,
     #                               shuffle=True
     #                               )
-    print(colorama.Fore.GREEN + f'loaded data from {args.train_data} length is len(train_dataloader)'+colorama.Style.RESET_ALL)
+    print(colorama.Fore.GREEN + f'loaded data from {args.train_data} length is {len(train_dataloader)}'+colorama.Style.RESET_ALL)
 
     args.epoch_steps = len(train_dataloader)//(args.num_devices*args.num_nodes)
     print(f'epoch_steps is {args.epoch_steps}')
@@ -219,8 +219,7 @@ if __name__ == '__main__':
                       log_every_n_steps=args.log_every_n_steps,
                       enable_checkpointing=args.enable_checkpointing,
                       accumulate_grad_batches=args.accumulate_grad_batches,
-                      gradient_clip_val=args.gradient_clip_val,
-                      val_check_interval=args.val_check_interval)
+                      gradient_clip_val=args.gradient_clip_val)
     if "deepspeed" in args.strategy:
         trainer.strategy.config["zero_optimization"]["allgather_bucket_size"] = args.ds_bucket_mb * 1000 * 1000
         trainer.strategy.config["zero_optimization"]["reduce_bucket_size"] = args.ds_bucket_mb * 1000 * 1000

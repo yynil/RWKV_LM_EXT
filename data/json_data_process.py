@@ -74,14 +74,15 @@ if __name__ == '__main__':
     pad_id = 151334
     cls_id = 151329
     max_len = 512
-    batch_size = 2
+    batch_size = 256
     print('pad_id:', pad_id,' cls_id:', cls_id)
     data_loader = load_and_tokenize_ds(json_data_file, max_len, cls_id, pad_id,batch_size)
     for d in data_loader:
         print(d)
-        print(d['query_ids'].shape)
-        print(d['pos_ids'].shape)
-        print(d['neg_ids'].shape)
+        print(d['query_input_ids'].shape)
+        print(d['pos_input_ids'].shape)
+        print(d['neg_input_ids'].shape)
         break
+    print(len(data_loader))
 
     
