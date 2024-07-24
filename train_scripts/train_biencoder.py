@@ -183,7 +183,7 @@ if __name__ == '__main__':
     #print loading data from train_data in red
     import colorama
     print(colorama.Fore.RED + f'loading data from {args.train_data}')
-    train_dataloader = load_and_tokenize_ds(args.train_data, args.max_seq_length, args.emb_id, args.pad_id, args.real_bsz)
+    train_dataloader = load_and_tokenize_ds(args.train_data, args.max_seq_length, args.emb_id, args.pad_id, args.micro_bsz)
     # train_dataloader = DataLoader(dataset,
     #                               num_workers=8,
     #                               pin_memory=True, 
