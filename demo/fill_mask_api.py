@@ -4,7 +4,6 @@ from typing import List, Optional
 import time
 import torch
 import argparse
-from transformers import AutoTokenizer
 model = None
 tokenizer = None
 def setup_env():
@@ -25,6 +24,8 @@ def setup_env():
     os.environ['HF_ENDPOINT'] = "https://hf-mirror.com"
     os.environ['NO_CUDA'] = '1'
 setup_env()
+
+from transformers import AutoTokenizer
 from src.model_encoder_run import RwkvEncoder
 from src.model_run import create_empty_args,load_embedding_ckpt_and_parse_args
 def load_base_model(base_model):
