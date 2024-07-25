@@ -4,7 +4,9 @@ from typing import List, Optional
 import time
 import torch
 import argparse
+from sentence_transformers.util import cos_sim as sim_fn
 model = None
+emb_model = None
 tokenizer = None
 def setup_env():
     import os
@@ -49,6 +51,46 @@ class FillMaskResponse(BaseModel):
     results: Optional[List[MaskFillResult]] = None
     elapsed_time: str
     msg: Optional[str] = None
+# 定义请求和响应模型
+class SentenceSimilarityRequest(BaseModel):
+    input_text: str
+    compared_texts: List[str]
+
+class SentenceSimilarityResponse(BaseModel):
+    similarities: Optional[List[float]] = None
+    elapsed_time: str
+    msg: Optional[str] = None
+
+# 添加新的路由处理函数
+@app.post("/compute_sentence_similarities")
+async def compute_sentence_similarities(request: Request, similarity_request: SentenceSimilarityRequest):
+    # 记录开始时间
+    start_time = time.time()
+
+    # 检查 input_text 是否为字符串
+    if not isinstance(similarity_request.input_text, str):
+        end_time = time.time()
+        elapsed_time = f"{end_time - start_time:.4f}"
+        return SentenceSimilarityResponse(
+            similarities=None,
+            elapsed_time=elapsed_time,
+            msg="input_text 必须是字符串"
+        )
+
+    # 检查 compared_texts 是否为字符串数组
+    if not isinstance(similarity_request.compared_texts, list) or not all(isinstance(text, str) for text in similarity_request.compared_texts):
+        end_time = time.time()
+        elapsed_time = f"{end_time - start_time:.4f}"
+        return SentenceSimilarityResponse(
+            similarities=None,
+            elapsed_time=elapsed_time,
+            msg="compared_texts 必须是字符串数组"
+        )
+
+    # 计算相似度（此处为示例，实际计算逻辑需要根据具体需求实现）
+    scores, elapsed_time = compute_similarities_internal([similarity_request.input_text] + similarity_request.compared_texts)
+
+    return SentenceSimilarityResponse(similarities=scores, elapsed_time=elapsed_time)
 
 @app.post("/fill_mask")
 async def fill_mask(request: Request, input_text: str):
@@ -101,7 +143,6 @@ def fill_mask_internal(input_text):
     mask_positions = []
     for text_idx in texts_idx:
         mask_positions.append([i for i, x in enumerate(text_idx) if x == args.mask_id])
-    print(mask_positions)
     device = 'cpu'
     input_ids = torch.tensor(texts_idx,dtype=torch.long,device=device)
     MAX_CUM_PROB = 0.7
@@ -126,13 +167,35 @@ def fill_mask_internal(input_text):
                             break
                     mask_idx += 1
     return results
+
+def compute_similarities_internal(texts :List[str],device:str='cpu'):
+    emb_id = 151329
+    pad_id = 151334
+    MAX_LEN = 4096
+    texts_idx = [tokenizer.encode(text,add_special_tokens=False) for text in texts]
+    texts_idx = [ text_idx[:MAX_LEN-1] + [emb_id] for text_idx in texts_idx]
+    max_len = max([len(text_idx) for text_idx in texts_idx])
+    texts_idx = [text_idx + [pad_id]*(max_len-len(text_idx)) for text_idx in texts_idx]
+    input_ids = torch.tensor(texts_idx,dtype=torch.long,device=device)
+    import time
+    with torch.no_grad():
+        with torch.autocast(device_type=device,dtype=torch.float32):
+            start_time = time.time()
+            embs = emb_model.encode_sentence(input_ids)
+            end_time = time.time()
+            scores = sim_fn(embs[0],embs[1:])
+            return scores.squeeze(0).tolist(),f'{end_time-start_time:.4f}'
+              
+
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser("Test MLM model")
+    parser = argparse.ArgumentParser("Test MLM/Emb model")
     parser.add_argument("--model_file",type=str,default='/media/yueyulin/data_4t/models/mlm/final/epoch_0_step_100000/RWKV-x060-MLM-ctx4096.pth.pth')
+    parser.add_argument("--emb_model_file",type=str,default='/media/yueyulin/KINGSTON/models/all_chinese_biencoder/trainable_model/epoch_9/RWKV-x060-MLM-ctx4096.pth.pth')
     args = parser.parse_args() 
     print(args)
     model = load_base_model(args.model_file)
+    emb_model = load_base_model(args.emb_model_file)
     tokenizer = AutoTokenizer.from_pretrained('THUDM/glm-4-9b-chat', trust_remote_code=True)
     args.emb_id = 151329
     args.pad_id = 151334
@@ -143,5 +206,13 @@ if __name__ == "__main__":
     input_text = '你是天边的云彩，我是[MASK]的风筝。'
     results = fill_mask_internal(input_text)
     print(results)
+    texts = ['每天吃苹果有什么好处？',
+             '宁神安眠：苹果中含有的磷和铁等元素，易被肠壁吸收，有补脑养血、宁神安眠作用。苹果的香气是治疗抑郁和压抑感的良药。研究发现，在诸多气味中，苹果的香气对人的心理影响最大，它具有明显的消除心理压抑感的作用。',
+             '美白养颜、降低胆固醇：苹果中的胶质和微量元素铬能保持血糖的稳定，还能有效地降低胆固醇。苹果中的粗纤维可促进肠胃蠕功，并富含铁、锌等微量元素，可使皮肤细润有光泽，起到美容瘦身的作用。',
+             '苹果生吃治便秘，熟吃治腹泻：苹果中含有丰富的鞣酸、果胶、膳食纤维等特殊物质，鞣酸是肠道收敛剂，它能减少肠道分泌而使大便内水分减少，从而止泻。而果胶则是个“两面派”，未经加热的生果胶有软化大便缓解便秘的作用，煮过的果胶却摇身一变，具有收敛、止泻的功效。膳食纤维又起到通便作用。',
+             '保护心脏：苹果的纤维、果胶、抗氧化物等能降低体内坏胆固醇并提高好胆固醇含量，所以每天吃一两个苹果不容易得心脏病。']
+    scores,elapsed_time = compute_similarities_internal(texts)
+    print(scores)
+    print(elapsed_time)
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
