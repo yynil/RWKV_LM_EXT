@@ -153,6 +153,7 @@ def create_arg_parser():
     parser.add_argument('--train_type', type=str, default='', help='train type')
     parser.add_argument('--skip_steps',type=int,default=0,help='skip steps in the peft checkpoint')
 
+    parser.add_argument('--shadow_bidirection',type=int,default=0,help='shadow bidirection')
     parser.add_argument('--mlm_probability', type=float, default=0.3, help='mlm probability')
     parser.add_argument('--emb_id', type=int, default=151329, help='cls id')
     parser.add_argument('--mask_id', type=int, default=151330, help='mask id')

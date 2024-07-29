@@ -476,14 +476,17 @@ class RwkvEncoder(pl.LightningModule):
             args.share_emb = True
         if not hasattr(args, 'pad_id'):
             args.pad_id = 0
+        if not hasattr(args, 'shadow_bidirection'):
+            args.shadow_bidirection = 0
         assert args.n_embd % 32 == 0
         assert args.dim_att % 32 == 0
         assert args.dim_ffn % 32 == 0
 
         self.emb = nn.Embedding(args.vocab_size, args.n_embd)
-        Block.forward = bi_block_forward
-        from src.model import RWKV_Tmix_x060
-        RWKV_Tmix_x060.forward = bi_att_forward
+        if args.shadow_bidirection == 0:
+            Block.forward = bi_block_forward
+            from src.model import RWKV_Tmix_x060
+            RWKV_Tmix_x060.forward = bi_att_forward
         self.blocks = nn.ModuleList([Block(args, i) for i in range(args.n_layer)])
         self.ln_out = nn.LayerNorm(args.n_embd)
         # self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
@@ -585,13 +588,32 @@ class RwkvEncoder(pl.LightningModule):
         x_emb = x
 
         x = self.drop0(x)
-        for block in self.blocks:
-            if args.grad_cp == 1:
-                x = deepspeed.checkpointing.checkpoint(block, x, rev_idx,mask)
-            else:
-                x = block(x,rev_idx,mask)
+        if args.shadow_bidirection == 0:
+            for block in self.blocks:
+                if args.grad_cp == 1:
+                    x = deepspeed.checkpointing.checkpoint(block, x, rev_idx,mask)
+                else:
+                    x = block(x,rev_idx,mask)
+        else:
+            #use the shadow bidirection 
+            rev_x = reverse_x(x,rev_idx)
+            #cat the x and rev_x
+            whole_x = torch.cat([x,rev_x],dim=0)
+            
+            for block in self.blocks:
+                if args.grad_cp == 1:
+                    whole_x = deepspeed.checkpointing.checkpoint(block, whole_x)
+                else:
+                    whole_x = block(whole_x)
 
-        x = self.ln_out(x)
+        if args.shadow_bidirection == 0:
+            x = self.ln_out(x)
+        else:
+            #split the whole_x to x and rev_x
+            x = whole_x[:B,:,:]
+            rev_x = whole_x[B:,:,:]
+            rev_x = reverse_x(rev_x,rev_idx)
+            x = self.ln_out((x+rev_x)/2)
 
         if args.head_qk > 0:
             q = self.head_q(x)[:, :T, :]
