@@ -3,7 +3,6 @@ import torch.nn as nn
 from torch.nn import functional as F
 import os
 
-from src.model_run import create_mask, reverse_x_idx
 HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE_A"])
 def create_mask(x,emb_id=1,pad_id=0):
     mask = torch.ones(x.size(0),x.size(1)).to(x.device)
@@ -302,11 +301,11 @@ class RwkvEncoder(nn.Module):
         if not args.share_emb:
             self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
     def encode_sentence(self, idx):
-        embs = self.forward(idx)
+        _,embs = self.forward(idx,True)
         #get the position of emb_id
         position = torch.eq(idx, self.emb_id).int().argmax(-1)
         return embs[torch.arange(embs.size(0)), position]
-    def forward(self, idx):
+    def forward(self, idx,return_logits=False):
         args = self.args
         B, T = idx.size()
         assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
@@ -320,7 +319,7 @@ class RwkvEncoder(nn.Module):
             x = block(x,rev_idx,mask)
 
         x = self.ln_out(x)
-
+        logits = x
         if args.head_qk > 0:
             q = self.head_q(x)[:, :T, :]
             k = self.head_k(x)[:, :T, :]
@@ -344,4 +343,6 @@ class RwkvEncoder(nn.Module):
             else:
                 x = torch.matmul(x,self.emb.weight.t())
         #x is used to caclculate the MLM loss
+        if return_logits:
+            return x,logits
         return x

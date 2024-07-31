@@ -578,7 +578,7 @@ class RwkvEncoder(pl.LightningModule):
             return cfg.get("offload_optimizer") or cfg.get("offload_param")
         return False
     
-    def forward(self, idx):
+    def forward(self, idx,return_logits = False):
         args = self.args
         B, T = idx.size()
         assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
@@ -614,7 +614,7 @@ class RwkvEncoder(pl.LightningModule):
             rev_x = whole_x[B:,:,:]
             rev_x = reverse_x(rev_x,rev_idx)
             x = self.ln_out((x+rev_x)/2)
-
+        logits = x
         if args.head_qk > 0:
             q = self.head_q(x)[:, :T, :]
             k = self.head_k(x)[:, :T, :]
@@ -637,6 +637,8 @@ class RwkvEncoder(pl.LightningModule):
             else:   
                 x = torch.matmul(x,self.emb.weight.t())
         #x is used to caclculate the MLM loss
+        if return_logits:
+            return x,logits
         return x
 
     def training_step(self, batch, batch_idx):
@@ -647,12 +649,37 @@ class RwkvEncoder(pl.LightningModule):
         enc_loss = F.cross_entropy(head.view(-1,args.vocab_size),encoder_labels.view(-1))
         return enc_loss
 
+class RwkvEncoderForClassification(RwkvEncoder):
+    def __init__(self, args, num_labels=1):
+        super().__init__(args)
+        self.num_labels = num_labels
+        self.score = nn.Linear(args.n_embd, num_labels,bias=False)
+    def forward(self, idx):
+        _,x = super().forward(idx,return_logits=True)
+        actual_len = torch.eq(idx, self.args.emb_id).int().argmax(-1)
+        sentence_emb = x[torch.arange(x.size(0)),actual_len]
+        logits = self.score(sentence_emb)
+        return logits
+    def training_step(self, batch, batch_idx):
+        idx = batch['input_ids']
+        label = batch['labels']
+        logits = self.forward(idx)
+        if self.num_labels == 1:
+            loss_fct = nn.MSELoss()
+            label = label.bfloat16()
+            loss = loss_fct(logits.squeeze(), label.squeeze())
+        else:
+            loss_fct = nn.CrossEntropyLoss()
+            loss = loss_fct(logits.view(-1, self.num_labels), label.view(-1))
+        self.log('train_loss', loss)
+        return loss
+
 class RwkvEncoderBiEncoder(RwkvEncoder):
     def __init__(self, args) -> None:
         super().__init__(args)
     
     def forward(self, idx):
-        x = super().forward(idx)
+        _,x = super().forward(idx,return_logits=True)
         actual_len = torch.eq(idx, self.args.emb_id).int().argmax(-1)
         sentence_emb = x[torch.arange(x.size(0)),actual_len]
         return sentence_emb

@@ -54,7 +54,8 @@ def test_texts(args, model, device, texts, tokenizer):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("Test MLM model")
-    parser.add_argument("--model_file",type=str,default='/media/yueyulin/KINGSTON/models/macro_zh_bi_encoder/trainable_model/epoch_21/RWKV-x060-MLM-ctx4096.pth.pth')
+    parser.add_argument("--model_file",type=str,default='/media/yueyulin/KINGSTON/models/all_chinese_biencoder/trainable_model/epoch_9/RWKV-x060-MLM-ctx4096.pth.pth')
+    parser.add_argument("--device",type=str,default='cpu')
     args = parser.parse_args() 
     print(args)
     model = load_base_model(args.model_file)
@@ -62,7 +63,7 @@ if __name__ == '__main__':
     args.emb_id = 151329
     args.pad_id = 151334
     args.mask_id = 151330
-    device = 'cpu'
+    device = args.device
     model = model.to(device=device,dtype=torch.float32)
     texts = ['每天吃苹果有什么好处？',
              '某些水果和蔬菜特别富含可溶性纤维。在水果中，柑橘类水果如橙子、葡萄柚和柠檬的可溶性纤维含量相当高，浆果也是如此，包括草莓、蓝莓、黑莓和覆盆子。苹果和梨也提供可溶性纤维，香蕉也是如此。',

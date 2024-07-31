@@ -4,6 +4,41 @@ HEAD_SIZE = 64
 
 import torch.nn.functional as F
 
+def run_head_wise_computing(vt,kt,rt,u,wt,state,j):
+    v_h = vt[:, :, j].unsqueeze(2)  # Shape: [B, H, 1]
+    x = kt * v_h  # Shape: [B, H, HEAD_SIZE]
+    y_local = torch.sum(rt * (x * u + state[:, :, j]), dim=2)  # Shape: [B, H]
+    state[:, :, j] = state[:, :, j] * wt + x
+    return y_local
+
+def run_rwkv6_forward_mt(r,k,v,w,u,HEAD_SIZE :int = 64):
+    B, T, C = r.shape
+    H = C // HEAD_SIZE
+    
+    # 重塑张量
+    r = r.view(B, T, H, HEAD_SIZE)
+    k = k.view(B, T, H, HEAD_SIZE)
+    v = v.view(B, T, H, HEAD_SIZE)
+    w = w.view(B, T, H, HEAD_SIZE)
+    # 处理w，匹配CUDA实现
+    ew = torch.exp(-torch.exp(w))
+    y = torch.zeros([int(B), int(T), int(H), int(HEAD_SIZE)], device=r.device, dtype=torch.float32)
+    
+    # 初始化状态张量，包含所有batch和head
+    state = torch.zeros([int(B), int(H), int(HEAD_SIZE), int(HEAD_SIZE)], dtype=torch.float32, device=r.device)
+    for t in range(T):
+        rt = r[:, t]  # Shape: [B, H, HEAD_SIZE]
+        kt = k[:, t]  # Shape: [B, H, HEAD_SIZE]
+        vt = v[:, t]  # Shape: [B, H, HEAD_SIZE]
+        wt = ew[:, t]  # Shape: [B, H, HEAD_SIZE]
+        futures = []
+        for j in range(HEAD_SIZE):
+            fut = torch.jit._fork(run_head_wise_computing,vt,kt,rt,u,wt,state,j)
+            futures.append(fut)
+        for j in range(HEAD_SIZE):
+            y[:, t, :, j] = torch.jit._wait(futures[j])
+    return y.view(B, T, C)
+
 def run_rwkv6_forward(r,k,v,w,u):
     B, T, C = r.shape
     H = C // HEAD_SIZE
@@ -233,14 +268,21 @@ u = torch.randn(H, HEAD_SIZE, dtype=torch.float32)
 
 result = pytorch_forward(B, T, C, H,r, k, v, w, u)
 print(result.shape)
+import time
+start = time.time()
 result_optimized = optimized_pytorch_forward_xx(B, T, C, H,r, k, v, w, u)
+end = time.time()
+optimized_elapsed = end - start
 print(result_optimized.shape)
 r_cuda = r.to(device='cuda',dtype=torch.bfloat16)
 k_cuda = k.to(device='cuda',dtype=torch.bfloat16)
 v_cuda = v.to(device='cuda',dtype=torch.bfloat16)
 w_cuda = w.to(device='cuda',dtype=torch.bfloat16)
 u_cuda = u.to(device='cuda',dtype=torch.bfloat16)
+start = time.time()
 result_cuda = forward(B, T, C, H, r_cuda, k_cuda, v_cuda, w_cuda, u_cuda)
+end = time.time()
+cuda_elapsed = end - start
 print(result_cuda.shape)
 print(result[0][0])
 print(result_cuda[0][0])
@@ -249,7 +291,12 @@ print(torch.allclose(result, result_cuda.float().cpu(), atol=1e-2))
 print(result_optimized[0][0])
 print("结果是否接近:", torch.allclose(result, result_optimized, atol=1e-2))
 print("最大误差:", torch.max(torch.abs(result - result_optimized)))
-
-result_final = run_rwkv6_forward(r, k, v, w, u)
+start = time.time()
+result_final = run_rwkv6_forward_mt(r, k, v, w, u)
+end = time.time()
+cpu_elapsed = end - start
 print("结果是否接近:", torch.allclose(result, result_final, atol=1e-2))
 print("最大误差:", torch.max(torch.abs(result - result_final)))
+print('optimized_elapsed:',optimized_elapsed)
+print('cuda_elapsed:',cuda_elapsed)
+print('cpu_elapsed:',cpu_elapsed)

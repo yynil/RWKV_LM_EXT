@@ -43,13 +43,13 @@ if __name__ == '__main__':
     args.mask_id = 151330
     print(model)
     model = model.to(device='cuda',dtype=torch.bfloat16)
-    texts = ['法国的首都在[MASK]。',
-             '[MASK]首都在北京。',
+    texts = ['巴黎是[MASK]的首都。',
+             '北京是[MASK]的首都。',
              '生活的真谛是[MASK]。',
-             '在二战中，阿道夫·希特勒是[MASK]。',
+             '在二战中，阿道夫·希特勒是不可饶恕的[MASK]。',
              '1949年十月一号，发生了一件大事，那就是中华人民共和国[MASK]。',
-             '原子的行星模型，现在普遍认为是[MASK]的。',
-             '根据量子场论的解释，粒子的质量来自[MASK]的作用。',
+             '雨后，我[MASK]在公园里，呼吸新鲜的空气。',
+             '根据量子场论，粒子的质量来自[MASK]。',
              '雨后，彩虹出现在天边，小美陶醉地说："真[MASK]啊!"',]
     tokenizer = AutoTokenizer.from_pretrained('THUDM/glm-4-9b-chat', trust_remote_code=True)
     print(tokenizer(texts,padding=True,add_special_tokens=False))
