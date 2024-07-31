@@ -30,6 +30,33 @@ def tokenization_function(examples):
         neg_ids.append(n_ids)
     return {'query_ids': query_ids, 'pos_ids': pos_ids, 'neg_ids': neg_ids}
 
+def cross_collate_fn(examples, cls_id, max_len,sep_id, pad_id):
+    input_ids = []
+    labels = []
+    for example in examples:
+        query_id_choice = example['query_ids']
+        if len(query_id_choice) >= max_len-22:
+            #we ask for at least 20 tokens for pos and neg
+            query_id_choice = query_id_choice[:max_len-22]
+        query_id_choice = query_id_choice + [cls_id]
+         # 随机选择pos_ids中的一个元素
+        pos_choice = random.choice(example['pos_ids'])
+        # 随机选择neg_ids中的一个元素
+        neg_choice = random.choice(example['neg_ids'])
+        input_ids_pos = query_id_choice + [sep_id] + pos_choice
+        input_ids_neg = query_id_choice + [sep_id] + neg_choice
+        if len(input_ids_pos) >= max_len-1:
+            input_ids_pos = input_ids_pos[:max_len-1]
+        input_ids_pos = input_ids_pos + [cls_id] + [pad_id] * (max_len - 1 - len(input_ids_pos))
+        if len(input_ids_neg) >= max_len-1:
+            input_ids_neg = input_ids_neg[:max_len-1]
+        input_ids_neg = input_ids_neg + [cls_id] + [pad_id] * (max_len - 1 - len(input_ids_neg))
+        input_ids.append(input_ids_pos)
+        input_ids.append(input_ids_neg)
+        labels.append(1.0)
+        labels.append(0.0)
+    return {'input_ids': torch.tensor(input_ids,dtype=torch.long), 'labels': torch.tensor(labels,dtype=torch.float)}
+        
 def bi_collate_fn(examples, cls_id, max_len, pad_id):
     query_ids = []
     pos_ids = []
@@ -69,19 +96,28 @@ def load_and_tokenize_ds(json_data_file, max_len, cls_id, pad_id,batch_size):
     collate_fn = partial(bi_collate_fn, cls_id=cls_id, max_len=max_len, pad_id=pad_id)
     data_loader = DataLoader(tokenized_ds['train'], batch_size=batch_size, collate_fn=collate_fn,shuffle=True, num_workers=4, pin_memory=True)
     return data_loader
+
+def load_and_tokenize_cross_encoder_ds(json_data_file, max_len, cls_id,sep_id, pad_id,batch_size):
+    original_ds = load_dataset('json', data_files=json_data_file)
+    tokenized_ds = original_ds.map(tokenization_function, batched=True, remove_columns=original_ds['train'].features,num_proc=4)
+    collate_fn = partial(cross_collate_fn, cls_id=cls_id, max_len=max_len,sep_id=sep_id, pad_id=pad_id)
+    data_loader = DataLoader(tokenized_ds['train'], batch_size=batch_size, collate_fn=collate_fn,shuffle=True, num_workers=4, pin_memory=True)
+    return data_loader
+
 if __name__ == '__main__':
     json_data_file = '/home/yueyulin/tmp/mmarco_chinese_len-0-500.jsonl'
     pad_id = 151334
     cls_id = 151329
     max_len = 512
+    sep_id = 151330
     batch_size = 256
     print('pad_id:', pad_id,' cls_id:', cls_id)
-    data_loader = load_and_tokenize_ds(json_data_file, max_len, cls_id, pad_id,batch_size)
+    data_loader = load_and_tokenize_cross_encoder_ds(json_data_file, max_len, cls_id,sep_id, pad_id,batch_size)
     for d in data_loader:
         print(d)
-        print(d['query_input_ids'].shape)
-        print(d['pos_input_ids'].shape)
-        print(d['neg_input_ids'].shape)
+        print(d['input_ids'].shape)
+        print(d['labels'].shape)
+        print(d['input_ids'][0].tolist())
         break
     print(len(data_loader))
 
