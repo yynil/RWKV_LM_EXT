@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 import random
 import torch
 from functools import partial
+import math
 
 def tokenization_function(examples):
     global tokenizer
@@ -29,8 +30,35 @@ def tokenization_function(examples):
             n_ids.append(tokenizer.encode(n, add_special_tokens=False))
         neg_ids.append(n_ids)
     return {'query_ids': query_ids, 'pos_ids': pos_ids, 'neg_ids': neg_ids}
-
-def cross_collate_fn(examples, cls_id, max_len,sep_id, pad_id):
+def cross_collate_fn(examples, cls_id, max_len,sep_id, pad_id,train_group_size=8):
+    input_ids = []
+    for example in examples:
+        query_id_choice = example['query_ids']
+        if len(query_id_choice) >= max_len-22:
+            #we ask for at least 20 tokens for pos and neg
+            query_id_choice = query_id_choice[:max_len-22]
+        query_id_choice = query_id_choice + [cls_id]
+         # 随机选择pos_ids中的一个元素
+        pos_choice = random.choice(example['pos_ids'])
+        input_ids_pos = query_id_choice + [sep_id] + pos_choice
+        if len(input_ids_pos) >= max_len-1:
+            input_ids_pos = input_ids_pos[:max_len-1]
+        input_ids_pos = input_ids_pos + [cls_id] + [pad_id] * (max_len - 1 - len(input_ids_pos))
+        input_ids.append(input_ids_pos)
+        neg_ids = example['neg_ids']
+        if len(neg_ids) < train_group_size -1:
+            num = math.ceil((train_group_size - 1) / len(neg_ids))
+            neg_ids = random.sample(neg_ids*num, train_group_size -1)
+        else:
+            neg_ids = random.sample(neg_ids, train_group_size -1)
+        for neg_ids in neg_ids:
+            input_ids_neg = query_id_choice + [sep_id] + neg_ids
+            if len(input_ids_neg) >= max_len-1:
+                input_ids_neg = input_ids_neg[:max_len-1]
+            input_ids_neg = input_ids_neg + [cls_id] + [pad_id] * (max_len - 1 - len(input_ids_neg))
+            input_ids.append(input_ids_neg)
+    return {'input_ids': torch.tensor(input_ids,dtype=torch.long)}
+def cross_collate_fn_prev(examples, cls_id, max_len,sep_id, pad_id):
     input_ids = []
     labels = []
     for example in examples:
@@ -110,13 +138,12 @@ if __name__ == '__main__':
     cls_id = 151329
     max_len = 512
     sep_id = 151330
-    batch_size = 256
+    batch_size = 4
     print('pad_id:', pad_id,' cls_id:', cls_id)
     data_loader = load_and_tokenize_cross_encoder_ds(json_data_file, max_len, cls_id,sep_id, pad_id,batch_size)
     for d in data_loader:
         print(d)
         print(d['input_ids'].shape)
-        print(d['labels'].shape)
         print(d['input_ids'][0].tolist())
         break
     print(len(data_loader))

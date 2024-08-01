@@ -652,27 +652,28 @@ class RwkvEncoder(pl.LightningModule):
 class RwkvEncoderForClassification(RwkvEncoder):
     def __init__(self, args, num_labels=1):
         super().__init__(args)
+        if not hasattr(args, 'group_train_batch_size') :
+            args.group_train_batch_size = 8
         self.num_labels = num_labels
         self.score = nn.Linear(args.n_embd, num_labels,bias=False)
+        self.register_buffer(
+            'target_label',
+            torch.zeros(args.micro_bsz, dtype=torch.long)
+        )
     def forward(self, idx):
         _,x = super().forward(idx,return_logits=True)
         actual_len = torch.eq(idx, self.args.emb_id).int().argmax(-1)
         sentence_emb = x[torch.arange(x.size(0)),actual_len]
-        logits = self.score(sentence_emb)
-        return logits
+        scores = self.score(sentence_emb)
+        return scores
     def training_step(self, batch, batch_idx):
         idx = batch['input_ids']
-        label = batch['labels']
+        batch_size = self.args.micro_bsz
         logits = self.forward(idx)
-        if self.num_labels == 1:
-            loss_fct = nn.MSELoss()
-            label = label.bfloat16()
-            loss = loss_fct(logits.squeeze(), label.squeeze())
-        else:
-            loss_fct = nn.CrossEntropyLoss()
-            loss = loss_fct(logits.view(-1, self.num_labels), label.view(-1))
-        self.log('train_loss', loss)
+        logits = logits.view(batch_size,self.args.group_train_batch_size)
+        loss = F.cross_entropy(logits,self.target_label)
         return loss
+        
 
 class RwkvEncoderBiEncoder(RwkvEncoder):
     def __init__(self, args) -> None:
