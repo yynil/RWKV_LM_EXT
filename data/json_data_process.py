@@ -129,7 +129,7 @@ def load_and_tokenize_cross_encoder_ds(json_data_file, max_len, cls_id,sep_id, p
     original_ds = load_dataset('json', data_files=json_data_file)
     tokenized_ds = original_ds.map(tokenization_function, batched=True, remove_columns=original_ds['train'].features,num_proc=4)
     collate_fn = partial(cross_collate_fn, cls_id=cls_id, max_len=max_len,sep_id=sep_id, pad_id=pad_id)
-    data_loader = DataLoader(tokenized_ds['train'], batch_size=batch_size, collate_fn=collate_fn,shuffle=True, num_workers=4, pin_memory=True)
+    data_loader = DataLoader(tokenized_ds['train'], batch_size=batch_size, collate_fn=collate_fn,shuffle=True, num_workers=4, pin_memory=True,drop_last=True)
     return data_loader
 
 if __name__ == '__main__':
