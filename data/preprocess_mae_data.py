@@ -197,7 +197,10 @@ def create_wiki_dataset(wiki_dir,
         if ht is None:
             from harvesttext import HarvestText
             ht = HarvestText()
-        lang = detect(examples["text"])
+        try:
+            lang = detect(examples["text"])
+        except:
+            lang = 'zh'
         if lang != 'en':
             sentences = ht.cut_sentences(examples["text"])
         else:
@@ -221,7 +224,7 @@ def create_wiki_dataset(wiki_dir,
                 # curr_block.append(emb_id)
                 blocks.append(curr_block)
         return {'token_ids': blocks}
-    wiki = ds.map(sentence_wiki, num_proc=1, remove_columns=["title", "text"])
+    wiki = ds.map(sentence_wiki, num_proc=16, remove_columns=["title", "text"])
     tokenized_wiki = wiki.map(wiki_tokenize_function, num_proc=16, batched=True, remove_columns=["sentences"])
     processed_wiki = tokenized_wiki.map(wiki_pad_each_line, num_proc=16, batched=True, remove_columns=tokenized_wiki.column_names)
     return processed_wiki
