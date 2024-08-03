@@ -225,7 +225,7 @@ def create_wiki_dataset(wiki_dir,
                 blocks.append(curr_block)
         return {'token_ids': blocks}
     wiki = ds.map(sentence_wiki, num_proc=16, remove_columns=["title", "text"])
-    tokenized_wiki = wiki.map(wiki_tokenize_function, num_proc=16, batched=True, remove_columns=["sentences"])
+    tokenized_wiki = wiki.map(wiki_tokenize_function, num_proc=8, batched=True, remove_columns=["sentences"])
     processed_wiki = tokenized_wiki.map(wiki_pad_each_line, num_proc=16, batched=True, remove_columns=tokenized_wiki.column_names)
     return processed_wiki
 def creat_book_dataset(book_dir,
