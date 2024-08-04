@@ -66,7 +66,10 @@ def create_cci2_dataset(cci2_dir,
         return {"input_ids": sentences}
 
     def sentence_cci2(examples):
-        init_language_detector()
+        global ht
+        if ht is None:
+            from harvesttext import HarvestText
+            ht = HarvestText()
         sentences = ht.cut_sentences(examples["content"])
         return {"sentences": sentences}
         # global ht
