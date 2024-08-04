@@ -67,7 +67,6 @@ def create_cci2_dataset(cci2_dir,
 
     def sentence_cci2(examples):
         init_language_detector()
-        lang = detector.detect_language_of(examples["content"])
         sentences = ht.cut_sentences(examples["content"])
         return {"sentences": sentences}
         # global ht
