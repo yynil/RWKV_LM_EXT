@@ -59,7 +59,9 @@ def create_cci2_dataset(cci2_dir,
     
     target_length = max_seq_length - 1
     def cci2_tokenize_function(examples):
-        init_tokenizer()
+        global tokenizer
+        if tokenizer is None:
+            tokenizer = AutoTokenizer.from_pretrained('THUDM/glm-4-9b-chat', trust_remote_code=True)
         sentences = []
         for sents in examples['sentences']:
             sentences.append([tokenizer.encode(sent,add_special_tokens=False) for sent in sents])
