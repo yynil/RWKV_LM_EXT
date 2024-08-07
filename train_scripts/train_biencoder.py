@@ -202,7 +202,8 @@ if __name__ == '__main__':
    
     if args.ckpt_file is not None:
         print(f'loading model from {args.ckpt_file}')
-        model.load_state_dict(torch.load(args.ckpt_file))
+        info = model.load_state_dict(torch.load(args.ckpt_file),strict=False)
+        print(f'loaded model from {args.ckpt_file}: {info}')
 
     #Train the model
     # device = "auto"
